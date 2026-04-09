@@ -6,25 +6,26 @@ Two endpoints:
     - Frontend calls this to start a Retell web call.
     - Backend calls Retell's REST API and returns an access_token to the browser.
 
-  POST /api/v1/voice/retell/llm-webhook
-    - Retell calls this for every conversation turn (custom LLM pattern).
+  WS /api/v1/voice/retell/llm-webhook
+    - Retell opens a WebSocket for each call (custom LLM pattern).
     - Backend runs the existing Claude Orchestrator and returns the reply.
 
 Setup (one-time, manual):
   1. Sign up at app.retellai.com
-  2. Create a Custom LLM agent — set the LLM webhook URL to:
-       POST https://<your-public-url>/api/v1/voice/retell/llm-webhook
+  2. Create a Custom LLM agent — set the Custom LLM URL to:
+       wss://<your-public-url>/api/v1/voice/retell/llm-webhook
   3. Copy the Agent ID → RETELL_AGENT_ID in .env
   4. Copy the API key  → RETELL_API_KEY in .env
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from backend.src.agents.orchestrator import Orchestrator
@@ -86,15 +87,15 @@ async def register_call() -> JSONResponse:
     return JSONResponse({"access_token": access_token, "call_id": call_id})
 
 
-@router.post(
-    "/llm-webhook",
-    summary="Retell custom LLM webhook — processes each conversation turn with Claude",
-)
-async def llm_webhook(request: Request) -> JSONResponse:
+@router.websocket("/llm-webhook")
+async def llm_webhook(ws: WebSocket):
     """
-    Retell calls this endpoint for every conversation turn.
+    Retell Custom LLM WebSocket endpoint.
 
-    Request body from Retell:
+    Retell opens a WebSocket for each call. On each conversation turn it sends
+    a JSON message and expects a JSON response back over the same connection.
+
+    Inbound message from Retell:
       {
         "interaction_type": "response_required" | "reminder_required" | "update_only",
         "response_id": <int>,
@@ -102,7 +103,7 @@ async def llm_webhook(request: Request) -> JSONResponse:
         "call": {"call_id": "...", "metadata": {}}
       }
 
-    Expected response:
+    Outbound response:
       {
         "response_id": <int>,
         "content": "<agent reply>",
@@ -110,104 +111,122 @@ async def llm_webhook(request: Request) -> JSONResponse:
         "end_call": false
       }
     """
-    body = await request.json()
-
-    interaction_type: str = body.get("interaction_type", "")
-    response_id: int = body.get("response_id", 0)
-    transcript: List[Dict[str, str]] = body.get("transcript", [])
-    call_info: Dict[str, Any] = body.get("call", {})
-    call_id: str = call_info.get("call_id", "unknown")
-
-    logger.info(
-        "Retell webhook: call_id=%s interaction_type=%s turns=%d",
-        call_id, interaction_type, len(transcript),
-    )
-
-    # For update_only just acknowledge — no response needed
-    if interaction_type == "update_only":
-        return JSONResponse({"response_id": response_id, "content": "", "content_complete": False})
-
-    # Ensure session exists
-    if call_id not in _retell_sessions:
-        _retell_sessions[call_id] = {
-            "history": [],
-            "turns": 0,
-            "business_id": settings.DEMO_BUSINESS_ID,
-        }
-
-    session = _retell_sessions[call_id]
-
-    # Convert Retell transcript to the history format used by Orchestrator
-    # Retell roles: "agent" / "user"  →  Orchestrator: "assistant" / "customer"
-    history = [
-        {
-            "role": "assistant" if t["role"] == "agent" else "customer",
-            "content": t["content"],
-        }
-        for t in transcript
-    ]
-
-    # Get the last user message as the event body
-    user_messages = [t for t in transcript if t["role"] == "user"]
-    last_user_msg = user_messages[-1]["content"] if user_messages else ""
-
-    if not last_user_msg:
-        return JSONResponse({
-            "response_id": response_id,
-            "content": "I'm here — go ahead, how can I help?",
-            "content_complete": True,
-            "end_call": False,
-        })
-
-    # Build an InboundEvent and run through the existing Orchestrator
-    store = None  # Orchestrator will use in-memory store via app.state if needed
-    event = InboundEvent(
-        source=EventSource.VOICE,
-        event_type=EventType.SMS_INBOUND,
-        from_number="retell-web-call",
-        to_number=settings.TWILIO_PHONE_NUMBER or "unknown",
-        message_body=last_user_msg,
-        business_id=session["business_id"],
-    )
+    await ws.accept()
+    call_id = "unknown"
+    logger.info("Retell WebSocket connected")
 
     try:
-        orchestrator = Orchestrator(store=store)
-        result = await orchestrator.handle(event, history=history[:-1])  # exclude last user turn
-        agent_reply: str = result.get("reply", "")
-        outcome: str = result.get("outcome", "")
+        while True:
+            raw = await ws.receive_text()
+            body = json.loads(raw)
 
-        if not agent_reply:
-            agent_reply = "Let me look into that for you."
+            interaction_type: str = body.get("interaction_type", "")
+            response_id: int = body.get("response_id", 0)
+            transcript: List[Dict[str, str]] = body.get("transcript", [])
+            call_info: Dict[str, Any] = body.get("call", {})
+            call_id = call_info.get("call_id", call_id)
 
-        session["turns"] += 1
-        session["history"] = history
+            logger.info(
+                "Retell WS message: call_id=%s interaction_type=%s turns=%d",
+                call_id, interaction_type, len(transcript),
+            )
 
-        # End the call when a concrete outcome is reached
-        end_call = outcome in ("appointment_booked", "callback_scheduled")
+            # For update_only just acknowledge — no response needed
+            if interaction_type == "update_only":
+                continue
 
-        logger.info(
-            "Retell reply: call_id=%s outcome=%s end_call=%s reply_len=%d",
-            call_id, outcome, end_call, len(agent_reply),
-        )
+            # Ensure session exists
+            if call_id not in _retell_sessions:
+                _retell_sessions[call_id] = {
+                    "history": [],
+                    "turns": 0,
+                    "business_id": settings.DEMO_BUSINESS_ID,
+                }
 
-        if end_call:
-            _retell_sessions.pop(call_id, None)
+            session = _retell_sessions[call_id]
 
-        return JSONResponse({
-            "response_id": response_id,
-            "content": agent_reply,
-            "content_complete": True,
-            "end_call": end_call,
-        })
+            # Convert Retell transcript to the history format used by Orchestrator
+            # Retell roles: "agent" / "user"  →  Orchestrator: "assistant" / "customer"
+            history = [
+                {
+                    "role": "assistant" if t["role"] == "agent" else "customer",
+                    "content": t["content"],
+                }
+                for t in transcript
+            ]
 
+            # Get the last user message as the event body
+            user_messages = [t for t in transcript if t["role"] == "user"]
+            last_user_msg = user_messages[-1]["content"] if user_messages else ""
+
+            if not last_user_msg:
+                await ws.send_text(json.dumps({
+                    "response_id": response_id,
+                    "content": "I'm here — go ahead, how can I help?",
+                    "content_complete": True,
+                    "end_call": False,
+                }))
+                continue
+
+            # Build an InboundEvent and run through the existing Orchestrator
+            store = None
+            event = InboundEvent(
+                source=EventSource.VOICE,
+                event_type=EventType.SMS_INBOUND,
+                from_number="retell-web-call",
+                to_number=settings.TWILIO_PHONE_NUMBER or "unknown",
+                message_body=last_user_msg,
+                business_id=session["business_id"],
+            )
+
+            try:
+                orchestrator = Orchestrator(store=store)
+                result = await orchestrator.handle(event, history=history[:-1])
+                agent_reply: str = result.get("reply", "")
+                outcome: str = result.get("outcome", "")
+
+                if not agent_reply:
+                    agent_reply = "Let me look into that for you."
+
+                session["turns"] += 1
+                session["history"] = history
+
+                end_call = outcome in ("appointment_booked", "callback_scheduled")
+
+                logger.info(
+                    "Retell reply: call_id=%s outcome=%s end_call=%s reply_len=%d",
+                    call_id, outcome, end_call, len(agent_reply),
+                )
+
+                if end_call:
+                    _retell_sessions.pop(call_id, None)
+
+                await ws.send_text(json.dumps({
+                    "response_id": response_id,
+                    "content": agent_reply,
+                    "content_complete": True,
+                    "end_call": end_call,
+                }))
+
+            except Exception as exc:
+                logger.exception("Orchestrator failed for Retell call_id=%s: %s", call_id, exc)
+                await ws.send_text(json.dumps({
+                    "response_id": response_id,
+                    "content": (
+                        "I'm sorry, I ran into a technical issue. "
+                        "Please try again or call us directly."
+                    ),
+                    "content_complete": True,
+                    "end_call": False,
+                }))
+
+    except WebSocketDisconnect:
+        logger.info("Retell WebSocket disconnected: call_id=%s", call_id)
     except Exception as exc:
-        logger.exception("Orchestrator failed for Retell call_id=%s: %s", call_id, exc)
-        return JSONResponse({
-            "response_id": response_id,
-            "content": (
-                "I'm sorry, I ran into a technical issue. "
-                "Please try again or call us directly."
-            ),
-            "content_complete": True,
-            "end_call": False,
-        })
+        logger.exception("Retell WebSocket error: call_id=%s %s", call_id, exc)
+    finally:
+        _retell_sessions.pop(call_id, None)
+        try:
+            await ws.close()
+        except Exception:
+            pass
