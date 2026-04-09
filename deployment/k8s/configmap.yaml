@@ -1,0 +1,76 @@
+---
+# ============================================================
+# SMB-in-a-Box / T-CHai  — Kubernetes ConfigMap
+#
+# Non-secret configuration. Sensitive values (API keys, DB
+# passwords) must go in a Kubernetes Secret named tchai-secrets.
+#
+# Create the namespace first:
+#   kubectl create namespace tchai
+#
+# Apply:
+#   kubectl apply -f deployment/k8s/configmap.yaml
+# ============================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tchai-config
+  namespace: tchai
+  labels:
+    app: tchai-api
+    team: tchai-hackathon
+data:
+  # App
+  APP_ENV: "production"
+  APP_HOST: "0.0.0.0"
+  APP_PORT: "8000"
+  LOG_LEVEL: "INFO"
+
+  # Anthropic
+  ANTHROPIC_MODEL: "claude-sonnet-4-6"
+  ANTHROPIC_MAX_TOKENS: "1024"
+
+  # T-Mobile SMS API
+  TMOBILE_SMS_API_URL: "https://api.t-mobile.com/sms/v1"
+
+  # Google
+  GOOGLE_CALENDAR_ID: "primary"
+
+  # SendGrid
+  SENDGRID_FROM_EMAIL: "noreply@smbinabox.example.com"
+  SENDGRID_FROM_NAME: "SMB-in-a-Box"
+
+  # Demo / Hackathon
+  USE_IN_MEMORY_STORE: "false"   # Use real Postgres in k8s deployment
+  DEMO_BUSINESS_ID: "demo-petes-plumbing"
+
+  # CORS — update with real frontend domain
+  ALLOWED_ORIGINS: "https://dashboard.smbinabox.example.com,https://app.smbinabox.example.com"
+
+---
+# ============================================================
+# Secret template — DO NOT store real values here.
+# Apply real secrets via:
+#   kubectl create secret generic tchai-secrets \
+#     --from-env-file=.env \
+#     --namespace=tchai
+#
+# Or use an external secret manager (AWS Secrets Manager,
+# HashiCorp Vault, GCP Secret Manager) with the External
+# Secrets Operator.
+# ============================================================
+
+# The secret keys expected by the application:
+#
+# ANTHROPIC_API_KEY
+# TMOBILE_SMS_API_KEY
+# TWILIO_ACCOUNT_SID
+# TWILIO_AUTH_TOKEN
+# TWILIO_PHONE_NUMBER
+# GOOGLE_CALENDAR_API_KEY
+# GOOGLE_REVIEWS_API_KEY
+# GOOGLE_PLACE_ID
+# SENDGRID_API_KEY
+# DATABASE_URL
+# SECRET_KEY

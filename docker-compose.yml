@@ -1,0 +1,73 @@
+version: "3.9"
+
+# ============================================================
+# SMB-in-a-Box / T-CHai — Docker Compose
+# Development stack: backend API + Postgres + Redis (optional)
+# Usage: docker compose up --build
+# ============================================================
+
+services:
+  # ---- Backend API ----
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tchai-api
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://smb:smb@postgres:5432/smbinabox
+      - USE_IN_MEMORY_STORE=${USE_IN_MEMORY_STORE:-true}
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - tchai-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ---- PostgreSQL ----
+  postgres:
+    image: postgres:15-alpine
+    container_name: tchai-postgres
+    environment:
+      POSTGRES_USER: smb
+      POSTGRES_PASSWORD: smb
+      POSTGRES_DB: smbinabox
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smb -d smbinabox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tchai-net
+
+  # ---- Redis (for conversation state caching — optional) ----
+  redis:
+    image: redis:7-alpine
+    container_name: tchai-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - tchai-net
+    profiles:
+      - full  # only started with: docker compose --profile full up
+
+volumes:
+  postgres_data:
+
+networks:
+  tchai-net:
+    driver: bridge
