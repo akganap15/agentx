@@ -189,38 +189,52 @@
 
 /* ── KPI Panel ─────────────────────────────────────────────── */
 .kpi-panel {
-  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0 16px;
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.kpi-panel .panel-title {
+  display: none;
 }
 
 .kpi-grid {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-direction: row;
+  gap: 0;
+  width: 100%;
 }
 
 .kpi-card {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  background: var(--accent-bg, var(--surface-2));
-  border-radius: var(--radius-sm);
+  flex: 1;
+  padding: 10px 20px;
+  border-right: 1px solid var(--border);
   border-left: 3px solid var(--accent, var(--magenta));
+  background: var(--accent-bg, var(--surface));
 }
 
+.kpi-card:first-child { border-left: 3px solid var(--accent, var(--magenta)); }
+.kpi-card:last-child  { border-right: none; }
+
 .kpi-icon {
-  font-size: 18px;
+  font-size: 20px;
   line-height: 1;
+  flex-shrink: 0;
 }
 
 .kpi-body {
-  flex: 1;
   min-width: 0;
 }
 
 .kpi-value {
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 800;
   color: var(--accent, var(--magenta));
   line-height: 1;
@@ -230,7 +244,8 @@
   font-size: 11px;
   color: var(--text-2);
   font-weight: 500;
-  margin-top: 1px;
+  margin-top: 2px;
+  white-space: nowrap;
 }
 
 .kpi-delta {

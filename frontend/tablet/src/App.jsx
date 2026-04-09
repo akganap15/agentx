@@ -159,9 +159,9 @@ export default function App() {
     <div className="app">
       {callActive && <VoiceCall onCallEnd={() => setCallActive(false)} />}
       <Header business={business} onCall={() => setCallActive(true)} />
+      <KPIPanel dashboard={dashboard} />
       <div className="layout">
         <aside className="sidebar">
-          <KPIPanel dashboard={dashboard} />
           <AgentStatus />
           <ActivityFeed activity={activity} />
         </aside>

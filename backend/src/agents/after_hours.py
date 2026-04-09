@@ -15,11 +15,10 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List
 
-import anthropic
-
 from backend.src.config import settings
 from backend.src.models.event import InboundEvent
 from backend.src.agents.prompts.after_hours import build_after_hours_prompt
+from backend.src.agents.litellm_client import litellm_chat
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +77,7 @@ class AfterHoursAgent:
     MAX_ITERATIONS = 5
 
     def __init__(self) -> None:
-        self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        pass
 
     async def run(
         self,
@@ -102,10 +101,8 @@ class AfterHoursAgent:
         final_reply = ""
 
         for iteration in range(self.MAX_ITERATIONS):
-            import asyncio
-            response = await asyncio.to_thread(
-                self.client.messages.create,
-                model=settings.ANTHROPIC_MODEL,
+            response = await litellm_chat(
+                model=settings.LITELLM_MODEL,
                 max_tokens=settings.ANTHROPIC_MAX_TOKENS,
                 system=system_prompt,
                 tools=AFTER_HOURS_TOOLS,

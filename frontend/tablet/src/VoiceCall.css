@@ -71,8 +71,8 @@
   flex-shrink: 0;
 }
 
-.vc-state-dot.greeting  { background: #aaa; }
-.vc-state-dot.waiting   { background: #5b8dee; }
+.vc-state-dot.connecting { background: #aaa; animation: pulse 1s infinite; }
+.vc-state-dot.active    { background: #00e676; }
 .vc-state-dot.listening { background: #00e676; animation: pulse 1.2s infinite; }
 .vc-state-dot.thinking  { background: #ffab00; animation: pulse 0.8s infinite; }
 .vc-state-dot.speaking  { background: #E20074; animation: pulse 1s infinite; }
@@ -86,6 +86,23 @@
 .vc-state-label {
   font-size: 12px;
   color: rgba(255,255,255,0.6);
+}
+
+.vc-header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.vc-model-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.5);
+  background: rgba(255,255,255,0.1);
+  padding: 2px 8px;
+  border-radius: 10px;
+  letter-spacing: 0.3px;
 }
 
 .vc-duration {
@@ -259,11 +276,144 @@
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── Waiting hint ──────────────────────────────────────────── */
+/* ── Idle / connecting hints ───────────────────────────────── */
+.vc-idle-hint,
 .vc-waiting-hint {
   font-size: 12px;
-  color: #5b8dee;
+  color: #9aa3b2;
   font-weight: 500;
+}
+
+.vc-connecting-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 30px 0;
+  color: #9aa3b2;
+  font-size: 13px;
+}
+
+/* ── Error banner ──────────────────────────────────────────── */
+.vc-error-banner {
+  background: #fff3f3;
+  border-bottom: 1px solid #ffc7c7;
+  color: #c0392b;
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ── Latency panel ─────────────────────────────────────────── */
+.vc-latency-panel {
+  background: #f8f9fa;
+  border-top: 1px solid #e2e5ea;
+  padding: 8px 14px 10px;
+  font-size: 11px;
+}
+
+.vc-latency-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  color: #5b6b7a;
+  padding: 0;
+  letter-spacing: 0.3px;
+  font-family: inherit;
+}
+
+.vc-latency-summary {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.vc-lat-metric {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: #fff;
+  border: 1px solid #e2e5ea;
+  border-radius: 8px;
+  padding: 6px 4px;
+  gap: 2px;
+}
+
+.vc-lat-label {
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #9aa3b2;
+}
+
+.vc-lat-value {
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.vc-lat-desc {
+  font-size: 8px;
+  color: #b0b8c4;
+  text-align: center;
+}
+
+/* History bars */
+.vc-latency-history {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.vc-lat-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vc-lat-bar-label {
+  width: 18px;
+  text-align: right;
+  color: #b0b8c4;
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.vc-lat-bar-track {
+  flex: 1;
+  height: 6px;
+  background: #e9ecef;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.vc-lat-bar {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+  min-width: 2px;
+}
+
+.vc-lat-bar-val {
+  width: 36px;
+  text-align: right;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.vc-lat-legend {
+  color: #b0b8c4;
+  font-size: 9px;
+  margin-top: 2px;
+  text-align: center;
 }
 
 /* ── Controls ──────────────────────────────────────────────── */
@@ -282,7 +432,6 @@
   gap: 12px;
 }
 
-/* Mic button */
 .vc-mic-btn {
   display: flex;
   align-items: center;
@@ -333,7 +482,7 @@
   color: #fff;
   border: none;
   border-radius: 30px;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   cursor: pointer;
   transition: background 0.15s, transform 0.1s;

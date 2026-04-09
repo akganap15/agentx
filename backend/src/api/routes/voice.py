@@ -22,8 +22,15 @@ import logging
 from typing import Any, Dict, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, Form, Request
-from fastapi.responses import Response
+import asyncio
+import urllib.request
+import json as _json
+import uuid
+
+import httpx
+import websockets
+from fastapi import APIRouter, Form, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, Response
 
 from backend.src.agents.orchestrator import Orchestrator
 from backend.src.config import settings
@@ -86,6 +93,232 @@ def _gather(action: str, say_text: str) -> str:
         f'{_say("I didn\'t hear anything. I\'ll have someone call you back shortly. Goodbye!")}'
         f'<Hangup/>'
     )
+
+
+VOICE_SYSTEM_PROMPT = """You are a friendly and professional AI voice assistant for Andy Plumbing, a residential plumbing service in Austin, TX.
+
+Your job: help callers book appointments or get help with plumbing issues.
+
+Appointment booking — collect ALL of these before confirming:
+1. Customer's full name
+2. Service address (street, city)
+3. Description of the problem
+4. Preferred date AND time (offer morning 8am-12pm or afternoon 12pm-5pm)
+5. Best callback number
+
+Do NOT confirm the booking or say goodbye until you have all 5 items. If the caller skips one, ask for it.
+
+After collecting everything, read back a full summary and ask the caller to confirm before ending.
+
+Emergency calls: immediately tell them to shut off the main water valve, get their address, and assure a tech within 2 hours.
+
+Voice rules:
+- 1-2 short sentences per turn
+- Ask exactly ONE question per turn, never two at once
+- Be warm, calm, and efficient"""
+
+# In-memory chat history for voice conversations
+_chat_sessions: dict[str, list] = {}
+
+
+@router.websocket("/ws")
+async def realtime_ws_relay(ws: WebSocket):
+    """
+    WebSocket relay: browser ↔ backend ↔ LiteLLM Realtime API.
+    Keeps the API key server-side. Proxies all JSON events bidirectionally.
+    """
+    await ws.accept()
+
+    litellm_key = getattr(settings, "LITELLM_API_KEY", "")
+    litellm_url = getattr(settings, "LITELLM_BASE_URL", "https://llm.t-mobile.com")
+
+    # Realtime API always uses the realtime-preview model regardless of LITELLM_MODEL
+    realtime_model = "gpt-4o-mini-realtime-preview"
+
+    # Build the upstream WebSocket URL
+    wss_url = f"{litellm_url.rstrip('/').replace('http://', 'ws://').replace('https://', 'wss://')}/v1/realtime?model={realtime_model}"
+
+    logger.info("Connecting to Realtime relay: %s", wss_url)
+
+    try:
+        async with websockets.connect(
+            wss_url,
+            additional_headers={
+                "Authorization": f"Bearer {litellm_key}",
+                "OpenAI-Beta": "realtime=v1",
+            },
+        ) as upstream:
+
+            relay_stats = {
+                "speech_stopped_at": None,
+                "first_audio_at": None,
+                "turn": 0,
+            }
+
+            async def browser_to_upstream():
+                """Forward messages from browser → LiteLLM, log key timing events."""
+                try:
+                    while True:
+                        msg = await ws.receive_text()
+                        await upstream.send(msg)
+                        # Log speech_stopped so we can correlate with first audio
+                        try:
+                            evt = _json.loads(msg)
+                            if evt.get("type") == "input_audio_buffer.speech_stopped":
+                                relay_stats["speech_stopped_at"] = asyncio.get_event_loop().time()
+                                relay_stats["first_audio_at"] = None
+                                relay_stats["turn"] += 1
+                                logger.info("[Relay] Turn %d: speech_stopped", relay_stats["turn"])
+                        except Exception:
+                            pass
+                except (WebSocketDisconnect, Exception):
+                    pass
+
+            async def upstream_to_browser():
+                """Forward messages from LiteLLM → browser, log first audio timing."""
+                try:
+                    async for msg in upstream:
+                        text = msg if isinstance(msg, str) else msg.decode()
+                        await ws.send_text(text)
+                        # Log TTFA on first audio delta
+                        try:
+                            evt = _json.loads(text)
+                            if evt.get("type") == "response.audio.delta" and relay_stats["first_audio_at"] is None:
+                                relay_stats["first_audio_at"] = asyncio.get_event_loop().time()
+                                if relay_stats["speech_stopped_at"]:
+                                    ttfa_ms = int((relay_stats["first_audio_at"] - relay_stats["speech_stopped_at"]) * 1000)
+                                    logger.info("[Relay] Turn %d TTFA (server-side): %dms", relay_stats["turn"], ttfa_ms)
+                            elif evt.get("type") == "response.done" and relay_stats["speech_stopped_at"]:
+                                turn_ms = int((asyncio.get_event_loop().time() - relay_stats["speech_stopped_at"]) * 1000)
+                                logger.info("[Relay] Turn %d total: %dms", relay_stats["turn"], turn_ms)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # Run both directions concurrently until one closes
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(browser_to_upstream()),
+                    asyncio.create_task(upstream_to_browser()),
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+
+    except Exception as exc:
+        logger.error("Realtime relay error: %s", exc)
+        try:
+            await ws.send_text(_json.dumps({"type": "error", "error": {"message": str(exc)}}))
+        except Exception:
+            pass
+    finally:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
+@router.post(
+    "/chat",
+    summary="LiteLLM-backed voice chat — takes a transcript, returns an AI reply",
+)
+async def voice_chat(request: Request) -> JSONResponse:
+    """
+    Called by VoiceCall.jsx after the user speaks.
+    Maintains per-session conversation history for multi-turn context.
+    """
+    body = await request.json()
+    message      = (body.get("message") or "").strip()
+    session_id   = body.get("session_id") or str(uuid.uuid4())
+
+    if not message:
+        return JSONResponse({"error": "empty message"}, status_code=400)
+
+    # Build or retrieve history
+    history = _chat_sessions.setdefault(session_id, [])
+    history.append({"role": "user", "content": message})
+
+    messages = [{"role": "system", "content": VOICE_SYSTEM_PROMPT}] + history
+
+    litellm_key  = getattr(settings, "LITELLM_API_KEY", "")
+    litellm_url  = getattr(settings, "LITELLM_BASE_URL", "https://llm.t-mobile.com")
+    litellm_model = getattr(settings, "LITELLM_MODEL", "gpt-4o-mini")
+
+    # Try /v1/chat/completions first, fall back to /chat/completions
+    endpoint = f"{litellm_url.rstrip('/')}/v1/chat/completions"
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {litellm_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": litellm_model,
+                    "messages": messages,
+                    "max_tokens": 120,
+                    "temperature": 0.7,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        reply = data["choices"][0]["message"]["content"].strip()
+        history.append({"role": "assistant", "content": reply})
+
+        # Cap history at last 20 turns to avoid token bloat
+        if len(history) > 40:
+            _chat_sessions[session_id] = history[-40:]
+
+        return JSONResponse({"reply": reply, "session_id": session_id})
+
+    except httpx.HTTPStatusError as exc:
+        logger.error("LiteLLM error %s: %s", exc.response.status_code, exc.response.text)
+        return JSONResponse({"error": f"LiteLLM {exc.response.status_code}"}, status_code=502)
+    except Exception as exc:
+        logger.exception("voice_chat failed: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.post(
+    "/realtime-session",
+    summary="Create an ephemeral OpenAI Realtime session token for the browser",
+)
+async def realtime_session() -> JSONResponse:
+    """
+    Exchange the server-side OPENAI_API_KEY for a short-lived ephemeral token.
+    The browser uses this token to connect directly to the OpenAI Realtime API
+    via WebRTC — the real API key never leaves the server.
+    """
+    openai_key = getattr(settings, "OPENAI_API_KEY", None)
+    if not openai_key:
+        return JSONResponse({"error": "OPENAI_API_KEY not configured"}, status_code=500)
+
+    payload = _json.dumps({
+        "model": "gpt-4o-realtime-preview-2024-12-17",
+        "voice": "shimmer",
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/realtime/sessions",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {openai_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = _json.loads(r.read())
+        return JSONResponse(data)
+    except Exception as exc:
+        logger.exception("Failed to create OpenAI Realtime session: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @router.post(

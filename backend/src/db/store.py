@@ -105,20 +105,20 @@ class InMemoryStore:
 
 def _build_demo_store() -> InMemoryStore:
     """
-    Creates and seeds the singleton demo store with Pete's Plumbing data.
+    Creates and seeds the singleton demo store with Andy Plumbing data.
     Called once at module import time.
     """
     store = InMemoryStore()
 
-    # ---- Demo Business: Pete's Plumbing ----
+    # ---- Demo Business: Andy Plumbing ----
     petes = Business(
         id=DEMO_BUSINESS_ID,
-        name="Pete's Plumbing",
+        name="Andy Plumbing",
         industry="plumbing",
-        owner_name="Pete",
+        owner_name="Andy",
         phone="+15551234567",
-        email="pete@petesplumbing.example.com",
-        website="https://petesplumbing.example.com",
+        email="andy@andyplumbing.example.com",
+        website="https://andyplumbing.example.com",
         address="123 Main St, Austin, TX 78701",
         timezone="America/Chicago",
         sms_number="+15557654321",
@@ -147,7 +147,7 @@ def _build_demo_store() -> InMemoryStore:
             ),
             FAQ(
                 question="Are you licensed and insured?",
-                answer="Absolutely. Pete's Plumbing is fully licensed (TX Plumbing License #12345) and carries $2M liability insurance.",
+                answer="Absolutely. Andy Plumbing is fully licensed (TX Plumbing License #12345) and carries $2M liability insurance.",
             ),
             FAQ(
                 question="What payment methods do you accept?",
@@ -272,7 +272,7 @@ def _build_demo_store() -> InMemoryStore:
                 ),
                 ConversationMessage(
                     role=MessageRole.ASSISTANT,
-                    content="Hi Bob! Great timing — bathroom rough-in work typically runs $800–$2,500 depending on complexity. I'd love to get Pete out to give you a free estimate. Are you available this Thursday or Friday afternoon?",
+                    content="Hi Bob! Great timing — bathroom rough-in work typically runs $800–$2,500 depending on complexity. I'd love to get Andy out to give you a free estimate. Are you available this Thursday or Friday afternoon?",
                     timestamp=now - timedelta(days=2),
                 ),
             ],
@@ -296,7 +296,7 @@ def _build_demo_store() -> InMemoryStore:
                 ),
                 ConversationMessage(
                     role=MessageRole.ASSISTANT,
-                    content="Hi! This is Pete's Plumbing — we've got you covered 24/7. First, shut off the main water valve (usually near your meter or water heater). Text me your address and we'll have an emergency tech to you within 2 hours. Hang tight!",
+                    content="Hi! This is Andy Plumbing — we've got you covered 24/7. First, shut off the main water valve (usually near your meter or water heater). Text me your address and we'll have an emergency tech to you within 2 hours. Hang tight!",
                     timestamp=now - timedelta(hours=1),
                 ),
             ],

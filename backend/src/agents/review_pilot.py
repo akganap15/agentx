@@ -12,11 +12,10 @@ import json
 import logging
 from typing import Any, Dict, List
 
-import anthropic
-
 from backend.src.config import settings
 from backend.src.models.event import InboundEvent
 from backend.src.agents.prompts.review_pilot import build_review_pilot_prompt
+from backend.src.agents.litellm_client import litellm_chat
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +67,7 @@ class ReviewPilotAgent:
     MAX_ITERATIONS = 4
 
     def __init__(self) -> None:
-        self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        pass
 
     async def run(
         self,
@@ -97,10 +96,8 @@ class ReviewPilotAgent:
         final_reply = ""
 
         for iteration in range(self.MAX_ITERATIONS):
-            import asyncio
-            response = await asyncio.to_thread(
-                self.client.messages.create,
-                model=settings.ANTHROPIC_MODEL,
+            response = await litellm_chat(
+                model=settings.LITELLM_MODEL,
                 max_tokens=settings.ANTHROPIC_MAX_TOKENS,
                 system=system_prompt,
                 tools=REVIEW_PILOT_TOOLS,

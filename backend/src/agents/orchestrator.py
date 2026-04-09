@@ -18,14 +18,13 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-import anthropic
-
 from backend.src.config import settings
 from backend.src.models.event import InboundEvent
 from backend.src.agents.prompts.orchestrator import (
     ORCHESTRATOR_SYSTEM_PROMPT,
     build_orchestrator_user_prompt,
 )
+from backend.src.agents.litellm_client import litellm_classify
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,6 @@ class Orchestrator:
 
     def __init__(self, store: Any = None) -> None:
         self.store = store
-        self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     async def handle(self, event: InboundEvent, history: Optional[list] = None) -> Dict[str, Any]:
         """
@@ -124,7 +122,7 @@ class Orchestrator:
         customer_history: str,
     ) -> Dict[str, Any]:
         """
-        Call Claude to classify the inbound message.
+        Classify the inbound message via LiteLLM.
         Returns the parsed JSON routing decision.
         """
         hours_summary = self._format_hours(business.get("hours", {}))
@@ -136,20 +134,15 @@ class Orchestrator:
             customer_history=customer_history,
         )
 
-        import asyncio
-        response = await asyncio.to_thread(
-            self.client.messages.create,
-            model=settings.ANTHROPIC_MODEL,
-            max_tokens=256,
+        raw_text = await litellm_classify(
             system=ORCHESTRATOR_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
+            user_message=user_prompt,
+            max_tokens=150,
         )
-
-        raw_text = response.content[0].text.strip()
         logger.debug("Orchestrator raw classification: %s", raw_text)
 
         try:
-            # Extract JSON even if Claude wraps it in markdown code fences
+            # Extract JSON even if wrapped in markdown code fences
             if "```" in raw_text:
                 raw_text = raw_text.split("```")[1]
                 if raw_text.startswith("json"):
@@ -157,7 +150,6 @@ class Orchestrator:
             return json.loads(raw_text)
         except (json.JSONDecodeError, IndexError) as exc:
             logger.warning("Failed to parse orchestrator JSON: %s — raw: %s", exc, raw_text)
-            # Safe fallback
             return {
                 "agent": "after_hours",
                 "confidence": 0.0,

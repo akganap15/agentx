@@ -18,11 +18,10 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-import anthropic
-
 from backend.src.config import settings
 from backend.src.models.event import InboundEvent
 from backend.src.agents.prompts.lead_catcher import build_lead_catcher_prompt
+from backend.src.agents.litellm_client import litellm_chat
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +123,7 @@ class LeadCatcherAgent:
     MAX_ITERATIONS = 6
 
     def __init__(self) -> None:
-        self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        pass
 
     async def run(
         self,
@@ -159,10 +158,8 @@ class LeadCatcherAgent:
         for iteration in range(self.MAX_ITERATIONS):
             logger.debug("LeadCatcher iteration %d for event_id=%s", iteration, event.id)
 
-            import asyncio
-            response = await asyncio.to_thread(
-                self.client.messages.create,
-                model=settings.ANTHROPIC_MODEL,
+            response = await litellm_chat(
+                model=settings.LITELLM_MODEL,
                 max_tokens=settings.ANTHROPIC_MAX_TOKENS,
                 system=system_prompt,
                 tools=LEAD_CATCHER_TOOLS,

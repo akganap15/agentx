@@ -36,6 +36,22 @@ class Settings(BaseSettings):
         default="",
         description="Anthropic API key — required in production.",
     )
+    OPENAI_API_KEY: str = Field(
+        default="",
+        description="OpenAI API key — used for Realtime voice sessions.",
+    )
+    LITELLM_API_KEY: str = Field(
+        default="",
+        description="LiteLLM proxy API key.",
+    )
+    LITELLM_BASE_URL: str = Field(
+        default="https://llm.t-mobile.com",
+        description="LiteLLM proxy base URL.",
+    )
+    LITELLM_MODEL: str = Field(
+        default="gpt-4o-mini",
+        description="Model to use via LiteLLM proxy.",
+    )
     ANTHROPIC_MODEL: str = Field(
         default="claude-sonnet-4-6",
         description="Claude model to use for all agents.",
