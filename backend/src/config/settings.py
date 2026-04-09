@@ -86,6 +86,16 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------ #
+    # Retell AI
+    # ------------------------------------------------------------------ #
+    RETELL_API_KEY: str = Field(default="", description="Retell AI API key.")
+    RETELL_AGENT_ID: str = Field(default="", description="Retell AI agent ID for web calls.")
+    VOICE_PROVIDER: str = Field(
+        default="openai_realtime",
+        description="Active voice provider: openai_realtime | retell",
+    )
+
+    # ------------------------------------------------------------------ #
     # Google APIs
     # ------------------------------------------------------------------ #
     GOOGLE_CALENDAR_API_KEY: str = Field(default="", description="Google Calendar API key.")

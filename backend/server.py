@@ -29,6 +29,7 @@ from backend.src.api.routes import (
     customers,
     dashboard,
     events,
+    retell_voice,
     voice,
 )
 
@@ -106,6 +107,7 @@ app.include_router(customers.router,     prefix=f"{API_PREFIX}/customers",     t
 app.include_router(dashboard.router,     prefix=f"{API_PREFIX}/dashboard",     tags=["Dashboard"])
 app.include_router(conversations.router, prefix=f"{API_PREFIX}/conversations", tags=["Conversations"])
 app.include_router(voice.router,         prefix=f"{API_PREFIX}/voice",         tags=["Voice"])
+app.include_router(retell_voice.router,  prefix=f"{API_PREFIX}/voice/retell",  tags=["Retell Voice"])
 
 # ---------------------------------------------------------------------------
 # Health / meta endpoints

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { api } from './api'
 import VoiceCall from './VoiceCall'
+import VoiceCallRetell from './VoiceCallRetell'
 import './App.css'
 
 const DEMO_ID = 'demo-petes-plumbing'
@@ -42,6 +43,7 @@ export default function App() {
   const [customMessage, setCustomMessage] = useState('')
   const [customScenario, setCustomScenario] = useState('inbound_lead')
   const [callActive, setCallActive] = useState(false)
+  const [voiceProvider, setVoiceProvider] = useState('openai_realtime')
   const [replyMessage, setReplyMessage] = useState('')
   const [replying, setReplying] = useState(false)
   const convEndRef = useRef(null)
@@ -157,8 +159,9 @@ export default function App() {
 
   return (
     <div className="app">
-      {callActive && <VoiceCall onCallEnd={() => setCallActive(false)} />}
-      <Header business={business} onCall={() => setCallActive(true)} />
+      {callActive && voiceProvider === 'openai_realtime' && <VoiceCall onCallEnd={() => setCallActive(false)} />}
+      {callActive && voiceProvider === 'retell' && <VoiceCallRetell onCallEnd={() => setCallActive(false)} />}
+      <Header business={business} onCall={() => setCallActive(true)} voiceProvider={voiceProvider} setVoiceProvider={setVoiceProvider} />
       <KPIPanel dashboard={dashboard} />
       <div className="layout">
         <aside className="sidebar">
@@ -191,7 +194,7 @@ export default function App() {
   )
 }
 
-function Header({ business, onCall }) {
+function Header({ business, onCall, voiceProvider, setVoiceProvider }) {
   return (
     <header className="header">
       <div className="header-left">
@@ -206,6 +209,20 @@ function Header({ business, onCall }) {
         </div>
       </div>
       <div className="header-right">
+        <div className="voice-toggle" title="Switch voice provider">
+          <button
+            className={`voice-toggle-btn ${voiceProvider === 'openai_realtime' ? 'active' : ''}`}
+            onClick={() => setVoiceProvider('openai_realtime')}
+          >
+            OpenAI
+          </button>
+          <button
+            className={`voice-toggle-btn ${voiceProvider === 'retell' ? 'active' : ''}`}
+            onClick={() => setVoiceProvider('retell')}
+          >
+            Retell
+          </button>
+        </div>
         <button className="call-btn" onClick={onCall}>
           <span>📞</span> Simulate Call
         </button>

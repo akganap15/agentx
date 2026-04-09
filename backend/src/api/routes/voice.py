@@ -133,7 +133,7 @@ async def realtime_ws_relay(ws: WebSocket):
     litellm_url = getattr(settings, "LITELLM_BASE_URL", "https://llm.t-mobile.com")
 
     # Realtime API always uses the realtime-preview model regardless of LITELLM_MODEL
-    realtime_model = "gpt-4o-mini-realtime-preview"
+    realtime_model = "gpt-4o-realtime-preview"
 
     # Build the upstream WebSocket URL
     wss_url = f"{litellm_url.rstrip('/').replace('http://', 'ws://').replace('https://', 'wss://')}/v1/realtime?model={realtime_model}"
