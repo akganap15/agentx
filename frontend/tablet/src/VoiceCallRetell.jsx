@@ -67,13 +67,21 @@ export default function VoiceCallRetell({ onCallEnd }) {
       })
 
       client.on('update', (update) => {
-        if (!update?.transcript) return
-        const mapped = update.transcript.map((t, i) => ({
-          id: i,
-          role: t.role === 'agent' ? 'agent' : 'customer',
-          content: t.content,
-        }))
-        setTranscript(mapped)
+        const items = update?.transcript ?? update?.data?.transcript ?? []
+        if (!items.length) return
+        // Merge consecutive same-role entries into single bubbles
+        const merged = []
+        for (const t of items) {
+          if (!t.content?.trim()) continue
+          const role = t.role === 'agent' ? 'agent' : 'customer'
+          const last = merged[merged.length - 1]
+          if (last && last.role === role) {
+            last.content += ' ' + t.content.trim()
+          } else {
+            merged.push({ id: merged.length, role, content: t.content.trim() })
+          }
+        }
+        if (merged.length) setTranscript(merged)
       })
 
       client.on('error', (err) => {
@@ -148,6 +156,23 @@ export default function VoiceCallRetell({ onCallEnd }) {
             <div className="voice-connecting">
               <div className="voice-spinner" />
               <p>Connecting to Retell AI...</p>
+            </div>
+          )}
+          {callState === 'active' && transcript.length === 0 && !agentTalking && (
+            <div className="voice-connecting">
+              <div style={{ fontSize: 32 }}>🎙️</div>
+              <p style={{ textAlign: 'center' }}>
+                Connected — speak to start the conversation
+              </p>
+            </div>
+          )}
+          {callState === 'active' && transcript.length === 0 && agentTalking && (
+            <div className="voice-msg agent">
+              <div className="voice-bubble typing-bubble">
+                <div className="thinking-dot" />
+                <div className="thinking-dot" />
+                <div className="thinking-dot" />
+              </div>
             </div>
           )}
           {transcript.map((t) => (

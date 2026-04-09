@@ -120,7 +120,7 @@ def _build_demo_store() -> InMemoryStore:
         email="andy@andyplumbing.example.com",
         website="https://andyplumbing.example.com",
         address="123 Main St, Austin, TX 78701",
-        timezone="America/Chicago",
+        timezone="America/Los_Angeles",
         sms_number="+15557654321",
         brand_voice="friendly, knowledgeable, and reassuring — like a neighbour who happens to be a master plumber",
         hours={
