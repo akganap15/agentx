@@ -25,7 +25,7 @@ import logging
 from typing import Any, Dict, List
 
 import httpx
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from backend.src.agents.litellm_client import litellm_classify
@@ -34,30 +34,35 @@ from backend.src.models.event import EventSource, EventType, InboundEvent
 
 # Voice-tuned system prompt — short, conversational, no markdown
 RETELL_SYSTEM_PROMPT = (
-    "You are a warm, friendly receptionist answering the phone for Andy Plumbing. "
+    "You are a warm, friendly receptionist answering the phone for Ashwin's Hair Studio. "
     "Talk like a real person — short, natural, conversational.\n\n"
     "VOICE STYLE:\n"
     "- Keep replies to 1 sentence, 2 max. Under 20 words when you can.\n"
     "- No markdown, no lists, no bullet points.\n"
     "- Ask one question at a time.\n"
     "- Don't overuse the customer's name — just talk naturally.\n\n"
-    "WHEN SOMEONE CALLS WITH A PROBLEM:\n"
-    "- Show empathy first — 'Oh no, that sounds stressful!'\n"
-    "- Ask a couple of follow-up questions to understand what's going on.\n"
-    "- If it's truly urgent (active flooding, burst pipe, no water at all), "
-    "offer to get a technician out right away — collect their address and phone, "
-    "confirm the details, and let them know someone's on the way.\n"
-    "- If it's not urgent (slow drip, clogged drain, running toilet, etc.), "
-    "schedule a regular appointment instead.\n\n"
-    "REGULAR APPOINTMENTS:\n"
-    "- Collect: name, address, phone, what's going on, and when works for them.\n"
+    "SERVICES WE OFFER:\n"
+    "- Haircuts and styling for women, men, and kids\n"
+    "- Color: full color, highlights, balayage, root touch-ups, gloss\n"
+    "- Blowouts and special-occasion styling\n"
+    "- Treatments: deep conditioning, keratin smoothing, scalp treatments\n"
+    "- Extensions and consultations\n\n"
+    "WHEN SOMEONE CALLS TO BOOK:\n"
+    "- Ask what service they're looking for and any preferences (stylist, length of hair, etc.).\n"
+    "- For color or chemical services, gently mention a consultation may be needed first.\n"
+    "- Offer a couple of available time options rather than open-ended 'when works for you?'\n\n"
+    "BOOKING DETAILS TO COLLECT:\n"
+    "- Name, phone number, the service they want, and the date/time.\n"
     "- Once you have everything, read it back to confirm before booking.\n\n"
-    "AFTER HOURS:\n"
-    "- Hours are Monday through Friday 8am to 6pm, Saturday 9am to 2pm, closed Sunday.\n"
-    "- If it's outside those hours and it's not an emergency, let them know "
-    "you're closed right now but you'd love to take their details and have someone "
-    "call them back first thing when you reopen.\n"
-    "- For real emergencies after hours, still dispatch a technician."
+    "WHEN SOMEONE CALLS WITH A QUESTION OR ISSUE:\n"
+    "- Be warm and reassuring — 'No worries, I can help with that!'\n"
+    "- For pricing, give a friendly ballpark and mention final price depends on hair length and the stylist.\n"
+    "- For complaints about a recent service, apologize sincerely, take their details, "
+    "and let them know a manager will follow up to make it right.\n\n"
+    "HOURS:\n"
+    "- Tuesday through Friday 9am to 7pm, Saturday 9am to 5pm, Sunday 10am to 4pm, closed Monday.\n"
+    "- If they call outside those hours, let them know you're closed right now but "
+    "you'd love to take their details and have someone call them back first thing when you reopen."
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +120,31 @@ async def register_call() -> JSONResponse:
     return JSONResponse({"access_token": access_token, "call_id": call_id})
 
 
+@router.post(
+    "/log-transcript",
+    summary="Log a finished call's transcript on the backend",
+)
+async def log_transcript(payload: Dict[str, Any] = Body(...)) -> JSONResponse:
+    """
+    Called by the frontend when a Retell call ends. Logs the transcript via
+    the standard Python logger so it shows up in the backend log stream.
+    """
+    call_id = payload.get("call_id") or "unknown"
+    duration = payload.get("duration", 0)
+    transcript: List[Dict[str, str]] = payload.get("transcript", [])
+
+    logger.info(
+        "Retell call transcript: call_id=%s duration=%ss turns=%d",
+        call_id, duration, len(transcript),
+    )
+    for entry in transcript:
+        role = entry.get("role", "?")
+        content = entry.get("content", "")
+        logger.info("  [%s] %s", role, content)
+
+    return JSONResponse({"status": "logged", "call_id": call_id, "turns": len(transcript)})
+
+
 @router.websocket("/llm-webhook/{call_id}")
 async def llm_webhook(ws: WebSocket, call_id: str):
     """
@@ -139,13 +169,23 @@ async def llm_webhook(ws: WebSocket, call_id: str):
       }
     """
     await ws.accept()
-    logger.info("Retell WebSocket connected: call_id=%s", call_id)
+
+    # Latest transcript seen from Retell, plus a count of how many turns
+    # we've already logged live so we don't repeat them on disconnect.
+    latest_transcript: List[Dict[str, str]] = []
+    logged_turn_count = 0
+
+    def _log_turn(entry: Dict[str, str]) -> None:
+        role = entry.get("role", "?")
+        content = (entry.get("content") or "").strip().replace("\n", " ")
+        if content:
+            logger.info("Retell turn: call_id=%s [%s] %s", call_id, role, content)
 
     # Send greeting immediately on connection — no LLM call needed
     try:
         await ws.send_text(json.dumps({
             "response_id": 0,
-            "content": "Hi, thanks for calling Andy Plumbing! How can I help you today?",
+            "content": "Hi, thanks for calling Ashwin's Hair Studio! How can I help you today?",
             "content_complete": True,
             "end_call": False,
         }))
@@ -163,10 +203,15 @@ async def llm_webhook(ws: WebSocket, call_id: str):
             call_info: Dict[str, Any] = body.get("call", {})
             call_id = call_info.get("call_id", call_id)
 
-            logger.info(
-                "Retell WS message: call_id=%s interaction_type=%s turns=%d",
-                call_id, interaction_type, len(transcript),
-            )
+            # Keep the most recent transcript and log any newly-finalized turns.
+            # A turn is "finalized" once a later turn appears after it, so we
+            # log everything up to (but not including) the last entry.
+            if transcript:
+                latest_transcript = transcript
+                if len(latest_transcript) > logged_turn_count + 1:
+                    for entry in latest_transcript[logged_turn_count : len(latest_transcript) - 1]:
+                        _log_turn(entry)
+                    logged_turn_count = len(latest_transcript) - 1
 
             # For update_only just acknowledge — no response needed
             if interaction_type == "update_only":
@@ -197,7 +242,7 @@ async def llm_webhook(ws: WebSocket, call_id: str):
             if not last_user_msg:
                 await ws.send_text(json.dumps({
                     "response_id": response_id,
-                    "content": "Hi, thanks for calling Andy Plumbing! How can I help you today?",
+                    "content": "Hi, thanks for calling Ashwin's Hair Studio! How can I help you today?",
                     "content_complete": True,
                     "end_call": False,
                 }))
@@ -224,12 +269,7 @@ async def llm_webhook(ws: WebSocket, call_id: str):
             session["turns"] += 1
             end_call = False
 
-            logger.info(
-                "Retell reply: call_id=%s outcome=%s end_call=%s reply_len=%d",
-                call_id, outcome, end_call, len(agent_reply),
-            )
-
-            # Try to send the reply. If Retell already closed the socket, log and exit cleanly.
+            # Try to send the reply. If Retell already closed the socket, exit cleanly.
             try:
                 await ws.send_text(json.dumps({
                     "response_id": response_id,
@@ -237,11 +277,7 @@ async def llm_webhook(ws: WebSocket, call_id: str):
                     "content_complete": True,
                     "end_call": end_call,
                 }))
-            except (WebSocketDisconnect, RuntimeError) as exc:
-                logger.info(
-                    "Retell closed socket before reply could be sent: call_id=%s (%s)",
-                    call_id, type(exc).__name__,
-                )
+            except (WebSocketDisconnect, RuntimeError):
                 return
 
             if end_call:
@@ -249,10 +285,15 @@ async def llm_webhook(ws: WebSocket, call_id: str):
                 return
 
     except WebSocketDisconnect:
-        logger.info("Retell WebSocket disconnected: call_id=%s", call_id)
+        pass
     except Exception as exc:
         logger.exception("Retell WebSocket error: call_id=%s %s", call_id, exc)
     finally:
+        # Flush any turns that were not yet logged live (typically the
+        # final in-progress turn at the moment the call ended).
+        for entry in latest_transcript[logged_turn_count:]:
+            _log_turn(entry)
+
         _retell_sessions.pop(call_id, None)
         try:
             await ws.close()

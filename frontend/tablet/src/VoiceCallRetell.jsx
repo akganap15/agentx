@@ -12,6 +12,10 @@ export default function VoiceCallRetell({ onCallEnd }) {
   const clientRef = useRef(null)
   const timerRef = useRef(null)
   const transcriptEndRef = useRef(null)
+  const callIdRef = useRef(null)
+  const transcriptRef = useRef([])
+  const durationRef = useRef(0)
+  const loggedRef = useRef(false)
 
   useEffect(() => {
     startCall()
@@ -20,7 +24,33 @@ export default function VoiceCallRetell({ onCallEnd }) {
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    transcriptRef.current = transcript
   }, [transcript])
+
+  useEffect(() => {
+    durationRef.current = duration
+  }, [duration])
+
+  async function logTranscript() {
+    if (loggedRef.current) return
+    loggedRef.current = true
+    const payload = {
+      call_id: callIdRef.current,
+      duration: durationRef.current,
+      transcript: transcriptRef.current,
+    }
+    console.log('[VoiceCallRetell] logging transcript:', payload)
+    try {
+      const res = await fetch('/api/v1/voice/retell/log-transcript', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      console.log('[VoiceCallRetell] log-transcript response:', res.status)
+    } catch (err) {
+      console.error('[VoiceCallRetell] failed to log transcript:', err)
+    }
+  }
 
   useEffect(() => {
     if (callState === 'active') {
@@ -40,7 +70,8 @@ export default function VoiceCallRetell({ onCallEnd }) {
         const data = await res.json()
         throw new Error(data.error || `Register call failed: ${res.status}`)
       }
-      const { access_token } = await res.json()
+      const { access_token, call_id } = await res.json()
+      callIdRef.current = call_id
 
       const client = new RetellWebClient()
       clientRef.current = client
@@ -53,6 +84,7 @@ export default function VoiceCallRetell({ onCallEnd }) {
       client.on('call_ended', () => {
         setCallState('ended')
         setStatusText('Call ended')
+        logTranscript()
         setTimeout(onCallEnd, 1200)
       })
 
@@ -102,9 +134,11 @@ export default function VoiceCallRetell({ onCallEnd }) {
   function cleanup() {
     clearInterval(timerRef.current)
     try { clientRef.current?.stopCall() } catch (_) {}
+    logTranscript()
   }
 
   function handleEnd() {
+    logTranscript()
     cleanup()
     onCallEnd()
   }

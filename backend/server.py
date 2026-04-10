@@ -34,6 +34,13 @@ from backend.src.api.routes import (
     voice,
 )
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+# Quiet noisy third-party loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -52,6 +59,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from backend.src.db.store import demo_store
         logger.info("Demo business loaded: %s", settings.DEMO_BUSINESS_ID)
         app.state.store = demo_store
+
+        # Hard-coded demo appointment so the dashboard KPI is non-zero on a fresh start
+        from backend.src.db.seed_appointment import seed_demo_appointment
+        await seed_demo_appointment(demo_store)
     else:
         from backend.src.db.session import engine, async_session_factory
         from backend.src.db.base import Base
@@ -78,6 +89,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             for conv in demo._conversations.values():
                 await store.save_conversation(conv)
             logger.info("Demo seed complete.")
+
+        # Hard-coded demo appointment so the dashboard KPI is non-zero
+        from backend.src.db.seed_appointment import seed_demo_appointment
+        await seed_demo_appointment(store)
 
     logger.info("=== T-CHai ready — listening on %s:%s ===", settings.APP_HOST, settings.APP_PORT)
     yield
