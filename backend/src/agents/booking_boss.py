@@ -175,48 +175,110 @@ class BookingBossAgent:
     ) -> str:
         try:
             if tool_name == "check_calendar_availability":
-                now = datetime.utcnow()
-                slots = [
-                    (now + timedelta(days=i, hours=h)).isoformat()
-                    for i in range(1, 5) for h in [9, 13, 15]
-                ]
-                return json.dumps({"available_slots": slots[:6], "_demo": True})
-
+                return await self._check_calendar(tool_input)
             elif tool_name == "book_appointment":
-                if store and tool_input.get("customer_phone"):
-                    customer = await store.get_customer(tool_input["customer_phone"])
-                    if customer:
-                        customer.lead_stage = "appointment_booked"
-                        customer.upcoming_appointment = datetime.fromisoformat(
-                            tool_input["appointment_datetime"]
-                        )
-                        customer.last_contact_at = datetime.utcnow()
-                        await store.save_customer(customer)
-                return json.dumps({
-                    "success": True,
-                    "appointment_datetime": tool_input["appointment_datetime"],
-                    "_demo": True,
-                })
-
+                return await self._book_appointment(tool_input, store)
             elif tool_name == "cancel_appointment":
-                return json.dumps({"success": True, "waitlist_notified": tool_input.get("notify_waitlist", True)})
-
+                return await self._cancel_appointment(tool_input, store)
             elif tool_name == "get_waitlist":
-                # Demo: return placeholder waitlist
-                return json.dumps({
-                    "waitlist": [
-                        {"phone": "+15550002001", "name": "Maria Garcia", "requested_at": "2025-03-25T10:00:00"},
-                        {"phone": "+15550002002", "name": "Tom Lee", "requested_at": "2025-03-25T14:00:00"},
-                    ],
-                    "_demo": True,
-                })
-
+                return await self._get_waitlist(tool_input, store)
             elif tool_name == "send_sms":
                 from backend.src.tools.sms import SMSTool
                 result = await SMSTool().send(to=tool_input["to_number"], body=tool_input["message"])
                 return json.dumps(result)
-
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
         except Exception as exc:
             logger.exception("BookingBoss tool '%s' failed: %s", tool_name, exc)
-            return json.dumps({"success": True, "_demo": True})
+            return json.dumps({"error": str(exc)})
+
+    async def _check_calendar(self, params: Dict[str, Any]) -> str:
+        """Return available slots via Google Calendar (falls back to demo if no key)."""
+        from backend.src.tools.calendar import CalendarTool
+        tool = CalendarTool()
+        slots = await tool.get_availability(
+            business_id=params.get("business_id", ""),
+            duration_minutes=params.get("service_duration_minutes", 60),
+        )
+        return json.dumps({"available_slots": slots})
+
+    async def _book_appointment(self, params: Dict[str, Any], store: Any) -> str:
+        """Book via Google Calendar and update customer record in store."""
+        from backend.src.tools.calendar import CalendarTool
+        tool = CalendarTool()
+        event_id = await tool.book_appointment(
+            business_id=params.get("business_id", ""),
+            customer_phone=params.get("customer_phone", ""),
+            customer_name=params.get("customer_name", ""),
+            service=params.get("service_description", "Appointment"),
+            appointment_dt=params["appointment_datetime"],
+            notes=params.get("notes", ""),
+        )
+        if store and params.get("customer_phone"):
+            customer = await store.get_customer(params["customer_phone"])
+            if customer:
+                customer.lead_stage = "appointment_booked"
+                customer.upcoming_appointment = datetime.fromisoformat(params["appointment_datetime"])
+                customer.last_contact_at = datetime.utcnow()
+                await store.save_customer(customer)
+        return json.dumps({
+            "success": True,
+            "calendar_event_id": event_id,
+            "appointment_datetime": params["appointment_datetime"],
+            "confirmation_message": f"Appointment rescheduled for {params['appointment_datetime']}",
+        })
+
+    async def _cancel_appointment(self, params: Dict[str, Any], store: Any) -> str:
+        """Delete the calendar event and notify waitlisted customers via SMS."""
+        from backend.src.tools.calendar import CalendarTool
+        from backend.src.tools.sms import SMSTool
+
+        appointment_id = params.get("appointment_id", "")
+        notify_waitlist = params.get("notify_waitlist", True)
+
+        cancelled = await CalendarTool().cancel_event(appointment_id)
+
+        notified = 0
+        if cancelled and notify_waitlist and store:
+            customers = await store.list_customers()
+            waitlisted = [
+                c for c in customers
+                if c.lead_stage in ("waitlist", "new") and c.opted_in_sms
+            ][:3]
+            sms = SMSTool()
+            for c in waitlisted:
+                await sms.send(
+                    to=c.phone,
+                    body="Good news — a slot just opened up! Reply to book your appointment.",
+                )
+                notified += 1
+
+        return json.dumps({
+            "success": cancelled,
+            "appointment_id": appointment_id,
+            "waitlist_notified": notified,
+        })
+
+    async def _get_waitlist(self, params: Dict[str, Any], store: Any) -> str:
+        """Query the customer store for leads without a booked appointment."""
+        if not store:
+            return json.dumps({"waitlist": [], "total": 0})
+
+        business_id = params.get("business_id", "")
+        limit = params.get("limit", 5)
+        customers = await store.list_customers(business_id=business_id or None)
+
+        waitlist = [
+            {
+                "phone": c.phone,
+                "name": c.name or "Customer",
+                "lead_stage": c.lead_stage,
+                "last_contact_at": c.last_contact_at.isoformat() if c.last_contact_at else None,
+            }
+            for c in customers
+            if c.opted_in_sms
+            and c.is_lead
+            and c.lead_stage not in ("appointment_booked", "closed")
+            and c.upcoming_appointment is None
+        ][:limit]
+
+        return json.dumps({"waitlist": waitlist, "total": len(waitlist)})

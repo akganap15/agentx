@@ -98,7 +98,8 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # Google APIs
     # ------------------------------------------------------------------ #
-    GOOGLE_CALENDAR_API_KEY: str = Field(default="", description="Google Calendar API key.")
+    GOOGLE_SERVICE_ACCOUNT_JSON: str = Field(default="", description="Path to Google service account JSON key file.")
+    GOOGLE_CALENDAR_API_KEY: str = Field(default="", description="Google Calendar API key (legacy, prefer service account).")
     GOOGLE_CALENDAR_ID: str = Field(default="primary", description="Google Calendar ID.")
     GOOGLE_REVIEWS_API_KEY: str = Field(default="", description="Google My Business / Reviews API key.")
     GOOGLE_PLACE_ID: str = Field(default="", description="Google Place ID for the demo business.")

@@ -80,16 +80,17 @@ def _say(text: str, voice: str = VOICE) -> str:
 
 def _gather(action: str, say_text: str) -> str:
     safe = _say(say_text)
+    retry_msg = _say("Sorry, I didn't catch that. Could you please repeat?")
+    goodbye_msg = _say("I didn't hear anything. I'll have someone call you back shortly. Goodbye!")
     return (
         f'<Gather input="speech" action="{action}" method="POST" '
         f'timeout="6" speechTimeout="2" language="en-US">'
         f'{safe}'
         f'</Gather>'
-        # If no input detected, re-ask once then hangup
-        f'{_say("Sorry, I didn\'t catch that. Could you please repeat?")}'
+        f'{retry_msg}'
         f'<Gather input="speech" action="{action}" method="POST" '
         f'timeout="6" speechTimeout="2" language="en-US"></Gather>'
-        f'{_say("I didn\'t hear anything. I\'ll have someone call you back shortly. Goodbye!")}'
+        f'{goodbye_msg}'
         f'<Hangup/>'
     )
 

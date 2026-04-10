@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 
 const proxyConfig = {
   "/api": {
-    target: "http://localhost:8000",
+    target: "http://localhost:3001",
     changeOrigin: true,
     ws: true,
   },
@@ -14,6 +14,7 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: proxyConfig,
+    allowedHosts: ["t-mobile.agentic-ai.com"],
   },
   preview: {
     port: 3000,

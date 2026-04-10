@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { api } from './api'
 import VoiceCall from './VoiceCall'
 import VoiceCallRetell from './VoiceCallRetell'
+import SetupWizard from './wizard/SetupWizard'
 import './App.css'
 
 const DEMO_ID = 'demo-petes-plumbing'
@@ -234,36 +235,35 @@ export default function App() {
     <div className="app">
       {callActive && voiceProvider === 'openai_realtime' && <VoiceCall onCallEnd={() => setCallActive(false)} />}
       {callActive && voiceProvider === 'retell' && <VoiceCallRetell onCallEnd={() => setCallActive(false)} />}
-      <Header business={business} onCall={() => setCallActive(true)} voiceProvider={voiceProvider} setVoiceProvider={setVoiceProvider} />
-      <KPIPanel dashboard={dashboard} />
-      <div className="layout">
-        <aside className="sidebar">
-          <AgentStatus />
-          <ActivityFeed activity={activity} />
-        </aside>
-        <main className="main">
-          <DemoPanel
-            scenarios={SCENARIOS}
-            onRun={runScenario}
-            simulating={simulating}
-            customMessage={customMessage}
-            setCustomMessage={setCustomMessage}
-            customScenario={customScenario}
-            setCustomScenario={setCustomScenario}
-          />
+      <Header business={business} onCall={() => setCallActive(true)} voiceProvider={voiceProvider} setVoiceProvider={setVoiceProvider} theme={theme} onToggleTheme={toggleTheme} />
+      <NavBar activeTab={activeTab} onTab={setActiveTab} />
+
+      <div className="tab-content">
+        {activeTab === 'dashboard' && (
+          <div className="tab-dashboard">
+            <div className="dashboard-welcome">
+              <div>
+                <h2 className="dashboard-title">Good {getTimeOfDay()}, {business?.owner_name || 'there'} 👋</h2>
+                <p className="dashboard-subtitle">Here's how your AI agents performed this week</p>
+              </div>
+              <div className="dashboard-date">{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</div>
+            </div>
+            <KPIPanel dashboard={dashboard} />
+            <DashboardActivity
+              conversations={conversations}
+              activity={activity}
+              activeConv={activeConv}
+              setActiveConv={setActiveConv}
+              convEndRef={convEndRef}
+            />
+          </div>
         )}
 
-        {activeTab === 'settings' && (
-          <SettingsTab
+        {activeTab === 'services' && (
+          <ServicesTab
             business={business}
             businessId={businessId}
-            theme={theme}
-            onToggleTheme={toggleTheme}
             onBusinessUpdate={setBusiness}
-            onRelaunchWizard={() => {
-              localStorage.removeItem(STORAGE_KEY)
-              setNeedsSetup(true)
-            }}
           />
         )}
 
@@ -296,12 +296,139 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {activeTab === 'settings' && (
+          <SettingsTab
+            business={business}
+            businessId={businessId}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            onBusinessUpdate={setBusiness}
+            onRelaunchWizard={() => {
+              localStorage.removeItem(STORAGE_KEY)
+              setNeedsSetup(true)
+            }}
+          />
+        )}
       </div>
     </div>
   )
 }
 
-function Header({ business, onCall, voiceProvider, setVoiceProvider }) {
+function getTimeOfDay() {
+  const h = new Date().getHours()
+  if (h < 12) return 'morning'
+  if (h < 17) return 'afternoon'
+  return 'evening'
+}
+
+function NavBar({ activeTab, onTab }) {
+  const tabs = [
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'services',  label: 'Manage Services' },
+    { id: 'demo',      label: 'Demo' },
+    { id: 'settings',  label: 'Settings' },
+  ]
+  return (
+    <nav className="nav-bar">
+      <div className="nav-tabs">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            className={`nav-tab ${activeTab === t.id ? 'active' : ''}`}
+            onClick={() => onTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+    </nav>
+  )
+}
+
+function LoginScreen({ onLogin, onSetup }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!email.trim() || !password.trim()) {
+      setError('Please enter your email and password.')
+      return
+    }
+    setError('')
+    setLoading(true)
+    try {
+      const result = await api.login(email.trim(), password)
+      onLogin(result.business_id)
+    } catch (err) {
+      const status = err.response?.status
+      if (status === 401) {
+        onSetup(email.trim())
+      } else {
+        setError(err.response?.data?.detail || 'Sign in failed. Please try again.')
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="login-screen">
+      <div className="login-bg-grid" />
+      <div className="login-card">
+        <div className="login-logo">
+          <span className="login-tmo-mark">T</span>
+          <span className="login-tmo-text">T-Mobile</span>
+        </div>
+        <div className="login-tagline">Business AI Platform</div>
+        <h1 className="login-title">Sign in to your account</h1>
+        <form className="login-form" onSubmit={handleSubmit}>
+          <div className="login-field">
+            <label className="login-label">Business Email</label>
+            <input
+              className="login-input"
+              type="email"
+              placeholder="you@yourbusiness.com"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              autoFocus
+              disabled={loading}
+            />
+          </div>
+          <div className="login-field">
+            <label className="login-label">Password</label>
+            <input
+              className="login-input"
+              type="password"
+              placeholder="••••••••"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              disabled={loading}
+            />
+          </div>
+          {error && <p className="login-error">{error}</p>}
+          <button className="login-btn" type="submit" disabled={loading}>
+            {loading ? <><span className="login-spinner" /> Signing in…</> : 'Sign In'}
+          </button>
+        </form>
+        <div className="login-footer">
+          <a href="#" className="login-link">Forgot password?</a>
+          <span className="login-sep">·</span>
+          <a href="#" className="login-link">Create account</a>
+        </div>
+        <div className="login-hint">New to T-Mobile Business AI? Enter your email to get started.</div>
+      </div>
+      <div className="login-brand-strip">
+        Powered by T-Mobile Network Intelligence &amp; Claude AI
+      </div>
+    </div>
+  )
+}
+
+function Header({ business, onCall, voiceProvider, setVoiceProvider, theme, onToggleTheme }) {
   return (
     <header className="header">
       <div className="header-left">
