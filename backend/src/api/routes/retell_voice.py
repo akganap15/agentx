@@ -87,8 +87,8 @@ async def register_call() -> JSONResponse:
     return JSONResponse({"access_token": access_token, "call_id": call_id})
 
 
-@router.websocket("/llm-webhook")
-async def llm_webhook(ws: WebSocket):
+@router.websocket("/llm-webhook/{call_id}")
+async def llm_webhook(ws: WebSocket, call_id: str):
     """
     Retell Custom LLM WebSocket endpoint.
 
@@ -111,8 +111,7 @@ async def llm_webhook(ws: WebSocket):
       }
     """
     await ws.accept()
-    call_id = "unknown"
-    logger.info("Retell WebSocket connected")
+    logger.info("Retell WebSocket connected: call_id=%s", call_id)
 
     try:
         while True:
@@ -181,43 +180,40 @@ async def llm_webhook(ws: WebSocket):
             try:
                 orchestrator = Orchestrator(store=store)
                 result = await orchestrator.handle(event, history=history[:-1])
-                agent_reply: str = result.get("reply", "")
+                agent_reply: str = result.get("reply", "") or "Let me look into that for you."
                 outcome: str = result.get("outcome", "")
+            except Exception as exc:
+                logger.exception("Orchestrator failed: call_id=%s %s", call_id, exc)
+                agent_reply = "I'm sorry, I ran into a technical issue. Please try again."
+                outcome = ""
 
-                if not agent_reply:
-                    agent_reply = "Let me look into that for you."
+            session["turns"] += 1
+            session["history"] = history
+            end_call = outcome in ("appointment_booked", "callback_scheduled")
 
-                session["turns"] += 1
-                session["history"] = history
+            logger.info(
+                "Retell reply: call_id=%s outcome=%s end_call=%s reply_len=%d",
+                call_id, outcome, end_call, len(agent_reply),
+            )
 
-                end_call = outcome in ("appointment_booked", "callback_scheduled")
-
-                logger.info(
-                    "Retell reply: call_id=%s outcome=%s end_call=%s reply_len=%d",
-                    call_id, outcome, end_call, len(agent_reply),
-                )
-
-                if end_call:
-                    _retell_sessions.pop(call_id, None)
-
+            # Try to send the reply. If Retell already closed the socket, log and exit cleanly.
+            try:
                 await ws.send_text(json.dumps({
                     "response_id": response_id,
                     "content": agent_reply,
                     "content_complete": True,
                     "end_call": end_call,
                 }))
+            except (WebSocketDisconnect, RuntimeError) as exc:
+                logger.info(
+                    "Retell closed socket before reply could be sent: call_id=%s (%s)",
+                    call_id, type(exc).__name__,
+                )
+                return
 
-            except Exception as exc:
-                logger.exception("Orchestrator failed for Retell call_id=%s: %s", call_id, exc)
-                await ws.send_text(json.dumps({
-                    "response_id": response_id,
-                    "content": (
-                        "I'm sorry, I ran into a technical issue. "
-                        "Please try again or call us directly."
-                    ),
-                    "content_complete": True,
-                    "end_call": False,
-                }))
+            if end_call:
+                _retell_sessions.pop(call_id, None)
+                return
 
     except WebSocketDisconnect:
         logger.info("Retell WebSocket disconnected: call_id=%s", call_id)
