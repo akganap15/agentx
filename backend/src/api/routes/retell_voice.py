@@ -28,9 +28,24 @@ import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from backend.src.agents.orchestrator import Orchestrator
+from backend.src.agents.litellm_client import litellm_classify
 from backend.src.config import settings
 from backend.src.models.event import EventSource, EventType, InboundEvent
+
+# Voice-tuned system prompt — short, conversational, no markdown
+RETELL_SYSTEM_PROMPT = (
+    "You are a friendly AI receptionist for Andy Plumbing in Austin, TX. "
+    "You answer phone calls. CRITICAL VOICE RULES:\n"
+    "- Reply in 1-2 SHORT sentences only. No markdown, no lists, no bullets.\n"
+    "- Ask ONE question at a time.\n"
+    "- Sound warm and conversational, like a real person.\n"
+    "- For emergencies (burst pipe, flooding, water heater) tell them to shut off "
+    "the main water valve first, then dispatch a technician.\n"
+    "- Collect: name, address, phone, problem description, preferred time.\n"
+    "- After collecting all info, confirm the booking and end the call.\n"
+    "- If asked about hours: Mon-Fri 8am-6pm, Sat 9am-2pm, closed Sunday. "
+    "Emergency service available 24/7."
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -143,17 +158,15 @@ async def llm_webhook(ws: WebSocket, call_id: str):
 
             session = _retell_sessions[call_id]
 
-            # Convert Retell transcript to the history format used by Orchestrator
-            # Retell roles: "agent" / "user"  →  Orchestrator: "assistant" / "customer"
-            history = [
-                {
-                    "role": "assistant" if t["role"] == "agent" else "customer",
-                    "content": t["content"],
-                }
-                for t in transcript
-            ]
+            # Build a chat history string from Retell's transcript
+            # Format as a flat conversation for the LLM
+            convo_lines = []
+            for t in transcript:
+                role = "Customer" if t["role"] == "user" else "Agent"
+                convo_lines.append(f"{role}: {t['content']}")
+            convo_text = "\n".join(convo_lines)
 
-            # Get the last user message as the event body
+            # Get the last user message
             user_messages = [t for t in transcript if t["role"] == "user"]
             last_user_msg = user_messages[-1]["content"] if user_messages else ""
 
@@ -166,30 +179,26 @@ async def llm_webhook(ws: WebSocket, call_id: str):
                 }))
                 continue
 
-            # Build an InboundEvent and run through the existing Orchestrator
-            store = None
-            event = InboundEvent(
-                source=EventSource.VOICE,
-                event_type=EventType.SMS_INBOUND,
-                from_number="retell-web-call",
-                to_number=settings.TWILIO_PHONE_NUMBER or "unknown",
-                message_body=last_user_msg,
-                business_id=session["business_id"],
-            )
-
+            # Single fast LLM call — no orchestrator, no specialist routing
             try:
-                orchestrator = Orchestrator(store=store)
-                result = await orchestrator.handle(event, history=history[:-1])
-                agent_reply: str = result.get("reply", "") or "Let me look into that for you."
-                outcome: str = result.get("outcome", "")
+                user_prompt = (
+                    f"Conversation so far:\n{convo_text}\n\n"
+                    f"Reply as the agent in 1-2 short sentences. "
+                    f"Do not include 'Agent:' prefix."
+                )
+                agent_reply = await litellm_classify(
+                    system=RETELL_SYSTEM_PROMPT,
+                    user_message=user_prompt,
+                    max_tokens=120,
+                )
+                outcome = ""
             except Exception as exc:
-                logger.exception("Orchestrator failed: call_id=%s %s", call_id, exc)
+                logger.exception("LLM call failed: call_id=%s %s", call_id, exc)
                 agent_reply = "I'm sorry, I ran into a technical issue. Please try again."
                 outcome = ""
 
             session["turns"] += 1
-            session["history"] = history
-            end_call = outcome in ("appointment_booked", "callback_scheduled")
+            end_call = False
 
             logger.info(
                 "Retell reply: call_id=%s outcome=%s end_call=%s reply_len=%d",
