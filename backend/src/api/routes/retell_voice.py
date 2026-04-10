@@ -173,7 +173,7 @@ async def llm_webhook(ws: WebSocket, call_id: str):
             if not last_user_msg:
                 await ws.send_text(json.dumps({
                     "response_id": response_id,
-                    "content": "I'm here — go ahead, how can I help?",
+                    "content": "Hi, thanks for calling Andy Plumbing! How can I help you today?",
                     "content_complete": True,
                     "end_call": False,
                 }))
