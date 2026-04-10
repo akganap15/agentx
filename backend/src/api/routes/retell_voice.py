@@ -128,6 +128,17 @@ async def llm_webhook(ws: WebSocket, call_id: str):
     await ws.accept()
     logger.info("Retell WebSocket connected: call_id=%s", call_id)
 
+    # Send greeting immediately on connection — no LLM call needed
+    try:
+        await ws.send_text(json.dumps({
+            "response_id": 0,
+            "content": "Hi, thanks for calling Andy Plumbing! How can I help you today?",
+            "content_complete": True,
+            "end_call": False,
+        }))
+    except Exception as exc:
+        logger.error("Failed to send greeting: call_id=%s %s", call_id, exc)
+
     try:
         while True:
             raw = await ws.receive_text()
