@@ -2,33 +2,52 @@
 Google Calendar Tool.
 
 Provides availability checking and appointment booking via the Google Calendar API.
-In demo mode (no API key), returns realistic mock data so the agents still function.
+In demo mode (no service-account key), returns realistic mock data so the agents
+still function.
+
+This module is salon-aware: slots are generated in America/Los_Angeles respecting
+Ashwin's Hair Studio hours (Tue–Fri 9–19, Sat 9–17, Sun 10–16, closed Monday).
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from backend.src.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Working hours for slot generation (demo mode)
-DEMO_WORK_HOURS = [(9, 0), (10, 0), (11, 0), (13, 0), (14, 0), (15, 0), (16, 0)]
+# Salon timezone — all slot generation, bookings, and freeBusy windows use this.
+SALON_TZ = ZoneInfo("America/Los_Angeles")
+
+# Working hours keyed by weekday() (0=Mon, 6=Sun). None = closed.
+# Values are (open_hour, close_hour) in 24h local time.
+SALON_HOURS: dict[int, Optional[Tuple[int, int]]] = {
+    0: None,         # Monday — closed
+    1: (9, 19),      # Tuesday
+    2: (9, 19),      # Wednesday
+    3: (9, 19),      # Thursday
+    4: (9, 19),      # Friday
+    5: (9, 17),      # Saturday
+    6: (10, 16),     # Sunday
+}
+
+SALON_LOCATION = "Ashwin's Hair Studio"
 
 
 class CalendarTool:
     """
     Google Calendar integration for appointment scheduling.
 
-    In production, authenticates via a service account JSON key and
-    interacts with the Google Calendar API v3.
+    Authenticates via a service account JSON key and talks to the Google
+    Calendar API v3 over REST (no httplib2).
     """
 
     def __init__(self) -> None:
-        self._service = None  # lazy-initialized Google API service
+        self._service = None  # lazy-initialized AuthorizedSession
 
     def _get_session(self):
         """Return a lazily-created AuthorizedSession (requests-based, no httplib2)."""
@@ -49,6 +68,10 @@ class CalendarTool:
         self._service = AuthorizedSession(credentials)
         return self._service
 
+    # ------------------------------------------------------------------ #
+    # Availability
+    # ------------------------------------------------------------------ #
+
     async def get_availability(
         self,
         business_id: str,
@@ -57,10 +80,11 @@ class CalendarTool:
         days_ahead: int = 7,
     ) -> List[str]:
         """
-        Return a list of available ISO 8601 datetime strings for the next `days_ahead` days.
+        Return a list of open appointment slots as ISO 8601 local datetime strings
+        (with Pacific offset) for the next `days_ahead` days.
 
-        In production: calls Google Calendar FreeBusy API to find gaps.
-        In demo mode: returns synthetic available slots.
+        Production: Google Calendar FreeBusy API.
+        Demo mode (no key): synthetic slots that still respect salon hours.
         """
         if not settings.GOOGLE_SERVICE_ACCOUNT_JSON:
             return self._demo_availability(duration_minutes, days_ahead)
@@ -71,59 +95,123 @@ class CalendarTool:
             logger.warning("Google Calendar availability failed, using demo data: %s", exc)
             return self._demo_availability(duration_minutes, days_ahead)
 
-    async def _real_availability(self, duration_minutes: int, days_ahead: int) -> List[str]:
-        """Query Google Calendar FreeBusy API via REST for open slots."""
+    async def _real_availability(
+        self, duration_minutes: int, days_ahead: int
+    ) -> List[str]:
+        """Query Google Calendar FreeBusy API for open slots within salon hours."""
         session = self._get_session()
-        now = datetime.utcnow()
-        end = now + timedelta(days=days_ahead)
 
+        now_local = datetime.now(SALON_TZ)
+        end_local = now_local + timedelta(days=days_ahead)
+
+        # FreeBusy expects RFC3339 — send UTC, Google handles TZ comparisons server-side.
         resp = session.post(
             "https://www.googleapis.com/calendar/v3/freeBusy",
             json={
-                "timeMin": now.isoformat() + "Z",
-                "timeMax": end.isoformat() + "Z",
+                "timeMin": now_local.astimezone(timezone.utc).isoformat(),
+                "timeMax": end_local.astimezone(timezone.utc).isoformat(),
+                "timeZone": str(SALON_TZ),
                 "items": [{"id": settings.GOOGLE_CALENDAR_ID}],
             },
         )
         resp.raise_for_status()
-        busy_periods = resp.json().get("calendars", {}).get(settings.GOOGLE_CALENDAR_ID, {}).get("busy", [])
-
-        slots = []
-        current = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        slot_end = current + timedelta(days=days_ahead)
-
-        while current < slot_end and len(slots) < 8:
-            if current.hour < 9 or current.hour >= 17:
-                current += timedelta(hours=1)
+        busy_raw = (
+            resp.json()
+            .get("calendars", {})
+            .get(settings.GOOGLE_CALENDAR_ID, {})
+            .get("busy", [])
+        )
+        # Parse once into tz-aware datetimes for fast comparison below.
+        busy_periods: List[Tuple[datetime, datetime]] = []
+        for b in busy_raw:
+            try:
+                b_start = datetime.fromisoformat(b["start"].replace("Z", "+00:00"))
+                b_end = datetime.fromisoformat(b["end"].replace("Z", "+00:00"))
+                busy_periods.append((b_start, b_end))
+            except (KeyError, ValueError):
                 continue
-            if current.weekday() >= 6:
-                current += timedelta(days=1)
+
+        return self._generate_slots(
+            start=now_local,
+            duration_minutes=duration_minutes,
+            days_ahead=days_ahead,
+            busy_periods=busy_periods,
+        )
+
+    def _demo_availability(
+        self, duration_minutes: int, days_ahead: int
+    ) -> List[str]:
+        """Synthetic slots when no Google API key is available."""
+        return self._generate_slots(
+            start=datetime.now(SALON_TZ),
+            duration_minutes=duration_minutes,
+            days_ahead=days_ahead,
+            busy_periods=[],
+        )
+
+    def _generate_slots(
+        self,
+        start: datetime,
+        duration_minutes: int,
+        days_ahead: int,
+        busy_periods: List[Tuple[datetime, datetime]],
+        max_slots: int = 8,
+    ) -> List[str]:
+        """
+        Walk forward from `start` in 30-minute steps, returning up to `max_slots`
+        slots that (a) fall inside salon hours for that weekday and (b) don't
+        overlap any busy period.
+        """
+        # Round UP to the next 30-min boundary so we don't offer a time that's
+        # already partially in the past.
+        minute_bucket = 30 if start.minute < 30 else 60
+        cursor = start.replace(
+            minute=(minute_bucket % 60), second=0, microsecond=0
+        )
+        if minute_bucket == 60:
+            cursor += timedelta(hours=1)
+
+        end_window = start + timedelta(days=days_ahead)
+        slots: List[str] = []
+
+        while cursor < end_window and len(slots) < max_slots:
+            hours = SALON_HOURS.get(cursor.weekday())
+            if hours is None:
+                # Closed today — jump to the start of the next day.
+                cursor = (cursor + timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
                 continue
 
-            slot_finish = current + timedelta(minutes=duration_minutes)
+            open_h, close_h = hours
+            if cursor.hour < open_h:
+                cursor = cursor.replace(hour=open_h, minute=0)
+                continue
+
+            slot_finish = cursor + timedelta(minutes=duration_minutes)
+            if slot_finish.hour > close_h or (
+                slot_finish.hour == close_h and slot_finish.minute > 0
+            ):
+                # Appointment would run past closing — jump to next day.
+                cursor = (cursor + timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                continue
+
             is_free = not any(
-                datetime.fromisoformat(b["start"].replace("Z", "")) <= current
-                and datetime.fromisoformat(b["end"].replace("Z", "")) >= slot_finish
-                for b in busy_periods
+                b_start < slot_finish and b_end > cursor
+                for b_start, b_end in busy_periods
             )
             if is_free:
-                slots.append(current.isoformat())
-            current += timedelta(minutes=30)
+                slots.append(cursor.isoformat())
+
+            cursor += timedelta(minutes=30)
 
         return slots
 
-    def _demo_availability(self, duration_minutes: int, days_ahead: int) -> List[str]:
-        """Return realistic demo slots when no Google API key is available."""
-        slots = []
-        base = datetime.utcnow().replace(minute=0, second=0, microsecond=0) + timedelta(hours=2)
-        for day_offset in range(1, days_ahead + 1):
-            day = base + timedelta(days=day_offset)
-            if day.weekday() >= 6:  # Skip Sunday
-                continue
-            for hour, minute in DEMO_WORK_HOURS[:3]:
-                slot = day.replace(hour=hour, minute=minute)
-                slots.append(slot.isoformat())
-        return slots[:8]
+    # ------------------------------------------------------------------ #
+    # Booking
+    # ------------------------------------------------------------------ #
 
     async def book_appointment(
         self,
@@ -132,49 +220,64 @@ class CalendarTool:
         customer_name: str,
         service: str,
         appointment_dt: str,
+        duration_minutes: int = 60,
         notes: str = "",
     ) -> str:
         """
-        Create a Google Calendar event for the appointment.
-
-        Returns the created event ID (or a demo ID).
+        Create a Google Calendar event for the appointment. Returns the created
+        event ID. Raises on real API failures — the caller decides whether to
+        apologize or retry; this function no longer silently returns a fake ID.
         """
         if not settings.GOOGLE_SERVICE_ACCOUNT_JSON:
-            demo_id = f"demo-evt-{datetime.utcnow().timestamp():.0f}"
-            logger.info("[DEMO] Booked appointment: %s at %s", service, appointment_dt)
+            demo_id = f"demo-evt-{datetime.now(SALON_TZ).timestamp():.0f}"
+            logger.info(
+                "[DEMO] Booked appointment: %s at %s (%d min)",
+                service, appointment_dt, duration_minutes,
+            )
             return demo_id
 
-        try:
-            session = self._get_session()
-            start_dt = datetime.fromisoformat(appointment_dt)
-            end_dt = start_dt + timedelta(minutes=90)
+        session = self._get_session()
 
-            event_body = {
-                "summary": f"{service} — {customer_name}",
-                "description": f"Customer: {customer_name}\nPhone: {customer_phone}\nNotes: {notes}",
-                "start": {"dateTime": start_dt.isoformat() + "Z", "timeZone": "UTC"},
-                "end": {"dateTime": end_dt.isoformat() + "Z", "timeZone": "UTC"},
-                "reminders": {
-                    "useDefault": False,
-                    "overrides": [{"method": "email", "minutes": 24 * 60}],
-                },
-            }
-            resp = session.post(
-                f"https://www.googleapis.com/calendar/v3/calendars/{settings.GOOGLE_CALENDAR_ID}/events",
-                json=event_body,
-            )
-            resp.raise_for_status()
-            return resp.json()["id"]
+        start_dt = datetime.fromisoformat(appointment_dt)
+        # If the caller passed a naive ISO string, assume it's salon-local time.
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=SALON_TZ)
+        end_dt = start_dt + timedelta(minutes=duration_minutes)
 
-        except Exception as exc:
-            logger.exception("Google Calendar booking failed: %s", exc)
-            return f"demo-evt-{datetime.utcnow().timestamp():.0f}"
+        event_body = {
+            "summary": f"{service} — {customer_name}",
+            "description": (
+                f"Customer: {customer_name}\n"
+                f"Phone: {customer_phone}\n"
+                f"Service: {service}\n"
+                f"Notes: {notes}"
+            ),
+            "location": SALON_LOCATION,
+            "start": {"dateTime": start_dt.isoformat(), "timeZone": str(SALON_TZ)},
+            "end":   {"dateTime": end_dt.isoformat(),   "timeZone": str(SALON_TZ)},
+            "reminders": {
+                "useDefault": False,
+                "overrides": [{"method": "email", "minutes": 24 * 60}],
+            },
+        }
+        resp = session.post(
+            f"https://www.googleapis.com/calendar/v3/calendars/{settings.GOOGLE_CALENDAR_ID}/events",
+            json=event_body,
+        )
+        resp.raise_for_status()
+        event_id = resp.json()["id"]
+        logger.info(
+            "Booked Google Calendar event %s: %s for %s at %s (%d min)",
+            event_id, service, customer_name, start_dt.isoformat(), duration_minutes,
+        )
+        return event_id
+
+    # ------------------------------------------------------------------ #
+    # Cancellation
+    # ------------------------------------------------------------------ #
 
     async def cancel_event(self, event_id: str) -> bool:
-        """
-        Delete a Google Calendar event by its event ID.
-        Returns True on success. Falls back gracefully in demo mode.
-        """
+        """Delete a Google Calendar event by its event ID."""
         if not settings.GOOGLE_SERVICE_ACCOUNT_JSON:
             logger.info("[DEMO] Cancelled calendar event: %s", event_id)
             return True

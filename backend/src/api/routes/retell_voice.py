@@ -6,9 +6,10 @@ Two endpoints:
     - Frontend calls this to start a Retell web call.
     - Backend calls Retell's REST API and returns an access_token to the browser.
 
-  WS /api/v1/voice/retell/llm-webhook
-    - Retell opens a WebSocket for each call (custom LLM pattern).
-    - Backend runs the existing Claude Orchestrator and returns the reply.
+  WS /api/v1/voice/retell/llm-webhook/{call_id}
+    - Retell opens a WebSocket for each call (custom-LLM pattern).
+    - Each turn, we run a short tool-use loop against Claude via LiteLLM so the
+      agent can check availability and create real Google Calendar events.
 
 Setup (one-time, manual):
   1. Sign up at app.retellai.com
@@ -22,15 +23,21 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any, Dict, List
 
 import httpx
-from fastapi import APIRouter, Body, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from backend.src.agents.litellm_client import litellm_classify
+from backend.src.agents.litellm_client import litellm_chat
 from backend.src.config import settings
-from backend.src.models.event import EventSource, EventType, InboundEvent
+from backend.src.models.conversation import (
+    Conversation,
+    ConversationMessage,
+    MessageRole,
+)
+from backend.src.tools.calendar import SALON_TZ, CalendarTool
 
 # Voice-tuned system prompt — short, conversational, no markdown
 RETELL_SYSTEM_PROMPT = (
@@ -47,13 +54,22 @@ RETELL_SYSTEM_PROMPT = (
     "- Blowouts and special-occasion styling\n"
     "- Treatments: deep conditioning, keratin smoothing, scalp treatments\n"
     "- Extensions and consultations\n\n"
+    "TYPICAL DURATIONS (use when calling tools):\n"
+    "- Haircut: 60 min. Haircut + blowout: 75 min.\n"
+    "- Single-process color or root touch-up: 90 min.\n"
+    "- Highlights or balayage: 150 min.\n"
+    "- Color + cut + blowout (full package): 180 min.\n\n"
     "WHEN SOMEONE CALLS TO BOOK:\n"
     "- Ask what service they're looking for and any preferences (stylist, length of hair, etc.).\n"
     "- For color or chemical services, gently mention a consultation may be needed first.\n"
-    "- Offer a couple of available time options rather than open-ended 'when works for you?'\n\n"
-    "BOOKING DETAILS TO COLLECT:\n"
-    "- Name, phone number, the service they want, and the date/time.\n"
-    "- Once you have everything, read it back to confirm before booking.\n\n"
+    "- Call check_availability when the caller is ready to pick a time — pass a sensible\n"
+    "  duration_minutes based on the service.\n"
+    "- Offer a couple of specific times from the tool result rather than a wall of options.\n\n"
+    "BOOKING DETAILS TO COLLECT BEFORE book_appointment:\n"
+    "- Name, phone number, the service, and the date/time.\n"
+    "- Read it back to confirm. Only call book_appointment after you hear a clear yes.\n"
+    "- When the caller says 'tomorrow' / 'Friday' / 'next Tuesday', resolve the actual\n"
+    "  date yourself using TODAY'S DATE below, then pass ISO local time to the tool.\n\n"
     "WHEN SOMEONE CALLS WITH A QUESTION OR ISSUE:\n"
     "- Be warm and reassuring — 'No worries, I can help with that!'\n"
     "- For pricing, give a friendly ballpark and mention final price depends on hair length and the stylist.\n"
@@ -65,12 +81,86 @@ RETELL_SYSTEM_PROMPT = (
     "you'd love to take their details and have someone call them back first thing when you reopen."
 )
 
+# Tools exposed to the voice agent (Anthropic tool_use format — litellm_client
+# converts to OpenAI function-calling under the hood).
+RETELL_VOICE_TOOLS: List[Dict[str, Any]] = [
+    {
+        "name": "check_availability",
+        "description": (
+            "Check upcoming open appointment slots at the salon. "
+            "Use when the caller is ready to pick a time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "duration_minutes": {
+                    "type": "integer",
+                    "description": (
+                        "Expected appointment length. 60 for a haircut, 90 for single "
+                        "color, 150 for highlights/balayage, 180 for a full package."
+                    ),
+                },
+                "days_ahead": {
+                    "type": "integer",
+                    "description": "How many days to search. Default 7.",
+                },
+            },
+            "required": ["duration_minutes"],
+        },
+    },
+    {
+        "name": "book_appointment",
+        "description": (
+            "Create a real Google Calendar booking. Only call AFTER reading back "
+            "name, phone, service, and time to the caller and hearing a clear yes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "customer_name": {"type": "string"},
+                "customer_phone": {
+                    "type": "string",
+                    "description": "E.164 format if possible, otherwise whatever the caller said.",
+                },
+                "service": {
+                    "type": "string",
+                    "description": "Short description, e.g. 'Haircut + blowout' or 'Full highlights'.",
+                },
+                "appointment_datetime": {
+                    "type": "string",
+                    "description": (
+                        "ISO 8601 local (Pacific) time, e.g. 2026-04-12T14:00:00. "
+                        "Resolve relative dates like 'tomorrow' yourself first."
+                    ),
+                },
+                "duration_minutes": {"type": "integer"},
+                "notes": {"type": "string"},
+            },
+            "required": [
+                "customer_name",
+                "customer_phone",
+                "service",
+                "appointment_datetime",
+                "duration_minutes",
+            ],
+        },
+    },
+]
+
+# Max Claude round-trips per Retell turn (1 = no tool use, 2 = one tool call + final reply).
+MAX_TOOL_ITERATIONS = 3
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# In-memory session store keyed by Retell call_id
+# In-memory session store keyed by Retell call_id.
+# Each entry: {"history": [<anthropic messages>], "turns": int, "business_id": str}
 _retell_sessions: Dict[str, Dict[str, Any]] = {}
 
+
+# --------------------------------------------------------------------------- #
+# REST: register a web call
+# --------------------------------------------------------------------------- #
 
 @router.post(
     "/register-call",
@@ -120,30 +210,9 @@ async def register_call() -> JSONResponse:
     return JSONResponse({"access_token": access_token, "call_id": call_id})
 
 
-@router.post(
-    "/log-transcript",
-    summary="Log a finished call's transcript on the backend",
-)
-async def log_transcript(payload: Dict[str, Any] = Body(...)) -> JSONResponse:
-    """
-    Called by the frontend when a Retell call ends. Logs the transcript via
-    the standard Python logger so it shows up in the backend log stream.
-    """
-    call_id = payload.get("call_id") or "unknown"
-    duration = payload.get("duration", 0)
-    transcript: List[Dict[str, str]] = payload.get("transcript", [])
-
-    logger.info(
-        "Retell call transcript: call_id=%s duration=%ss turns=%d",
-        call_id, duration, len(transcript),
-    )
-    for entry in transcript:
-        role = entry.get("role", "?")
-        content = entry.get("content", "")
-        logger.info("  [%s] %s", role, content)
-
-    return JSONResponse({"status": "logged", "call_id": call_id, "turns": len(transcript)})
-
+# --------------------------------------------------------------------------- #
+# WebSocket: Retell custom-LLM turn handler
+# --------------------------------------------------------------------------- #
 
 @router.websocket("/llm-webhook/{call_id}")
 async def llm_webhook(ws: WebSocket, call_id: str):
@@ -152,23 +221,10 @@ async def llm_webhook(ws: WebSocket, call_id: str):
 
     Retell opens a WebSocket for each call. On each conversation turn it sends
     a JSON message and expects a JSON response back over the same connection.
-
-    Inbound message from Retell:
-      {
-        "interaction_type": "response_required" | "reminder_required" | "update_only",
-        "response_id": <int>,
-        "transcript": [{"role": "agent"|"user", "content": "..."}]
-      }
-
-    Outbound response:
-      {
-        "response_id": <int>,
-        "content": "<agent reply>",
-        "content_complete": true,
-        "end_call": false
-      }
     """
     await ws.accept()
+
+    store = getattr(ws.app.state, "store", None)
 
     # Latest transcript seen from Retell, plus a count of how many turns
     # we've already logged live so we don't repeat them on disconnect.
@@ -204,8 +260,6 @@ async def llm_webhook(ws: WebSocket, call_id: str):
             call_id = call_info.get("call_id", call_id)
 
             # Keep the most recent transcript and log any newly-finalized turns.
-            # A turn is "finalized" once a later turn appears after it, so we
-            # log everything up to (but not including) the last entry.
             if transcript:
                 latest_transcript = transcript
                 if len(latest_transcript) > logged_turn_count + 1:
@@ -227,44 +281,97 @@ async def llm_webhook(ws: WebSocket, call_id: str):
 
             session = _retell_sessions[call_id]
 
-            # Build a chat history string from Retell's transcript
-            # Format as a flat conversation for the LLM
-            convo_lines = []
+            # Rebuild history from Retell's authoritative transcript so the
+            # assistant always sees the latest user utterance. We only replay
+            # plain text turns — tool_use/tool_result blocks from previous
+            # iterations live in session["history"] only within a single turn.
+            history: List[Dict[str, Any]] = []
             for t in transcript:
-                role = "Customer" if t["role"] == "user" else "Agent"
-                convo_lines.append(f"{role}: {t['content']}")
-            convo_text = "\n".join(convo_lines)
+                role = "user" if t.get("role") == "user" else "assistant"
+                content = (t.get("content") or "").strip()
+                if content:
+                    history.append({"role": role, "content": content})
 
-            # Get the last user message
-            user_messages = [t for t in transcript if t["role"] == "user"]
-            last_user_msg = user_messages[-1]["content"] if user_messages else ""
-
-            if not last_user_msg:
+            # Ensure the last message is from the user — otherwise there's
+            # nothing for the LLM to respond to this turn.
+            if not history or history[-1]["role"] != "user":
                 await ws.send_text(json.dumps({
                     "response_id": response_id,
-                    "content": "Hi, thanks for calling Ashwin's Hair Studio! How can I help you today?",
+                    "content": "Sorry, I didn't catch that — could you say it again?",
                     "content_complete": True,
                     "end_call": False,
                 }))
                 continue
 
-            # Single fast LLM call — no orchestrator, no specialist routing
+            # Build a system prompt that includes today's date so the LLM can
+            # resolve relative dates like "tomorrow" into concrete ISO strings.
+            today_local = datetime.now(SALON_TZ)
+            system_with_date = (
+                RETELL_SYSTEM_PROMPT
+                + f"\n\nTODAY'S DATE: {today_local.strftime('%A, %B %-d, %Y')} "
+                f"({today_local.strftime('%Y-%m-%d')}), salon local time."
+            )
+
+            # -------- Tool loop --------
+            agent_reply = ""
             try:
-                user_prompt = (
-                    f"Conversation so far:\n{convo_text}\n\n"
-                    f"Reply as the agent in 1-2 short sentences. "
-                    f"Do not include 'Agent:' prefix."
-                )
-                agent_reply = await litellm_classify(
-                    system=RETELL_SYSTEM_PROMPT,
-                    user_message=user_prompt,
-                    max_tokens=120,
-                )
-                outcome = ""
+                for _ in range(MAX_TOOL_ITERATIONS):
+                    resp = await litellm_chat(
+                        model=settings.LITELLM_MODEL,
+                        max_tokens=300,
+                        system=system_with_date,
+                        messages=history,
+                        tools=RETELL_VOICE_TOOLS,
+                    )
+                    history.append({"role": "assistant", "content": resp.content})
+
+                    # Collect any plain text the LLM produced this step.
+                    text_parts = [
+                        getattr(b, "text", "")
+                        for b in resp.content
+                        if getattr(b, "type", None) == "text"
+                    ]
+                    step_text = " ".join(p for p in text_parts if p).strip()
+                    if step_text:
+                        agent_reply = step_text
+
+                    if resp.stop_reason != "tool_use":
+                        break
+
+                    # Execute each tool_use block and feed the results back.
+                    tool_results = []
+                    for block in resp.content:
+                        if getattr(block, "type", None) != "tool_use":
+                            continue
+                        logger.info(
+                            "Retell tool_use: call_id=%s name=%s input=%s",
+                            call_id, block.name, json.dumps(block.input)[:300],
+                        )
+                        result_str = await _execute_voice_tool(
+                            name=block.name,
+                            args=block.input,
+                            call_id=call_id,
+                            session=session,
+                            store=store,
+                        )
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result_str,
+                        })
+                    history.append({"role": "user", "content": tool_results})
+                else:
+                    # Hit the iteration cap without a final text reply.
+                    if not agent_reply:
+                        agent_reply = (
+                            "Let me double-check that and get back to you in a moment."
+                        )
             except Exception as exc:
-                logger.exception("LLM call failed: call_id=%s %s", call_id, exc)
-                agent_reply = "I'm sorry, I ran into a technical issue. Please try again."
-                outcome = ""
+                logger.exception("Retell tool loop failed: call_id=%s %s", call_id, exc)
+                agent_reply = "I'm sorry, I ran into a technical issue. Could you say that again?"
+
+            if not agent_reply:
+                agent_reply = "Sorry, could you repeat that?"
 
             session["turns"] += 1
             end_call = False
@@ -299,3 +406,155 @@ async def llm_webhook(ws: WebSocket, call_id: str):
             await ws.close()
         except Exception:
             pass
+
+
+# --------------------------------------------------------------------------- #
+# Tool execution
+# --------------------------------------------------------------------------- #
+
+async def _execute_voice_tool(
+    name: str,
+    args: Dict[str, Any],
+    call_id: str,
+    session: Dict[str, Any],
+    store: Any,
+) -> str:
+    """
+    Dispatch a single tool call from the voice agent.
+
+    Returns a JSON-string result for the `tool_result` block fed back to the LLM.
+    On failure, returns a structured error so the model can apologize rather
+    than silently confirming a fake booking.
+    """
+    tool = CalendarTool()
+
+    if name == "check_availability":
+        try:
+            slots = await tool.get_availability(
+                business_id=session.get("business_id", settings.DEMO_BUSINESS_ID),
+                duration_minutes=int(args.get("duration_minutes", 60)),
+                days_ahead=int(args.get("days_ahead", 7)),
+            )
+            # Trim to a handful so the LLM reads only a couple back to the caller.
+            return json.dumps({"slots": slots[:6]})
+        except Exception as exc:
+            logger.exception("check_availability failed: call_id=%s %s", call_id, exc)
+            return json.dumps({"error": "Could not fetch calendar availability."})
+
+    if name == "book_appointment":
+        try:
+            appointment_iso = args["appointment_datetime"]
+            duration = int(args.get("duration_minutes", 60))
+            customer_name = args["customer_name"]
+            customer_phone = args["customer_phone"]
+            service = args["service"]
+            notes = args.get("notes", "") or "Booked via Retell voice call"
+
+            event_id = await tool.book_appointment(
+                business_id=session.get("business_id", settings.DEMO_BUSINESS_ID),
+                customer_phone=customer_phone,
+                customer_name=customer_name,
+                service=service,
+                appointment_dt=appointment_iso,
+                duration_minutes=duration,
+                notes=notes,
+            )
+        except Exception as exc:
+            logger.exception("book_appointment failed: call_id=%s %s", call_id, exc)
+            return json.dumps({
+                "error": "Calendar booking failed. Apologize and offer to try again.",
+            })
+
+        # Persist to the store so the dashboard KPI increments and the
+        # conversation is visible in the history view.
+        try:
+            await _persist_voice_booking(
+                store=store,
+                call_id=call_id,
+                session=session,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                service=service,
+                appointment_iso=appointment_iso,
+                event_id=event_id,
+            )
+        except Exception as exc:
+            # Don't fail the tool call just because the store write stumbled —
+            # the Google event is already real.
+            logger.warning("Could not persist voice booking to store: %s", exc)
+
+        return json.dumps({
+            "success": True,
+            "calendar_event_id": event_id,
+            "appointment_datetime": appointment_iso,
+        })
+
+    return json.dumps({"error": f"Unknown tool: {name}"})
+
+
+async def _persist_voice_booking(
+    store: Any,
+    call_id: str,
+    session: Dict[str, Any],
+    customer_name: str,
+    customer_phone: str,
+    service: str,
+    appointment_iso: str,
+    event_id: str,
+) -> None:
+    """
+    Create a Conversation with outcome=appointment_booked and update the
+    matching customer record. Mirrors seed_appointment.py so the dashboard
+    'Appointments Booked' KPI counts voice bookings the same way.
+    """
+    if store is None:
+        logger.warning("No store on app.state — skipping voice-booking persist.")
+        return
+
+    # Parse the appointment for a nicely-formatted confirmation string.
+    start_dt = datetime.fromisoformat(appointment_iso)
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=SALON_TZ)
+    pretty_when = start_dt.strftime("%A %b %-d at %-I:%M %p")
+
+    conv = Conversation(
+        business_id=session.get("business_id", settings.DEMO_BUSINESS_ID),
+        customer_phone=customer_phone,
+        agent="booking_boss",
+        summary=f"Voice booking: {service} for {customer_name}",
+        last_message=f"You're booked for {service} on {pretty_when}.",
+        outcome="appointment_booked",
+        trigger_event_id=f"retell:{call_id}",
+        messages=[
+            ConversationMessage(
+                role=MessageRole.USER,
+                content=f"(Voice call) Customer asked to book {service}.",
+            ),
+            ConversationMessage(
+                role=MessageRole.ASSISTANT,
+                content=f"Booked {service} for {customer_name} on {pretty_when}. "
+                f"Calendar event: {event_id}.",
+            ),
+        ],
+    )
+    await store.save_conversation(conv)
+    logger.info(
+        "Persisted voice booking conversation %s (call_id=%s, event=%s)",
+        conv.id, call_id, event_id,
+    )
+
+    # Update the customer record if we can find one (best-effort — keeps the
+    # in-memory store consistent but not required for the KPI).
+    try:
+        customer = await store.get_customer(customer_phone)
+        if customer:
+            customer.lead_stage = "appointment_booked"
+            customer.upcoming_appointment = (
+                start_dt if start_dt.tzinfo is None else start_dt.replace(tzinfo=None)
+            )
+            customer.last_contact_at = datetime.utcnow()
+            if customer_name and not customer.name:
+                customer.name = customer_name
+            await store.save_customer(customer)
+    except Exception as exc:
+        logger.debug("Customer upsert skipped: %s", exc)
