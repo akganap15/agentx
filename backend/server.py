@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from backend.src.config import settings
 from backend.src.api.routes import (
+    auth,
     businesses,
     conversations,
     customers,
@@ -44,7 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Initialize resources on startup; clean up on shutdown."""
     logger.info("=== T-CHai SMB-in-a-Box starting up ===")
     logger.info("Model: %s", settings.ANTHROPIC_MODEL)
-    logger.info("Store: %s", "in-memory" if settings.USE_IN_MEMORY_STORE else "postgres")
+    logger.info("Store: %s", "in-memory" if settings.USE_IN_MEMORY_STORE else "sqlite")
 
     if settings.USE_IN_MEMORY_STORE:
         # Pre-populate the demo store so the hackathon demo works out of the box
@@ -52,11 +53,31 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Demo business loaded: %s", settings.DEMO_BUSINESS_ID)
         app.state.store = demo_store
     else:
-        from backend.src.db.session import engine
+        from backend.src.db.session import engine, async_session_factory
         from backend.src.db.base import Base
+        # Import ORM models so metadata is populated before create_all
+        import backend.src.db.models  # noqa: F401
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database tables ensured.")
+
+        from backend.src.db.sqlite_store import SQLiteStore
+        store = SQLiteStore(async_session_factory)
+        app.state.store = store
+
+        # Seed demo data on first run (only if no businesses exist yet)
+        businesses = await store.list_businesses()
+        if not businesses:
+            logger.info("First run — seeding demo data into SQLite.")
+            from backend.src.db.store import _build_demo_store
+            demo = _build_demo_store()
+            for biz in demo._businesses.values():
+                await store.save_business(biz)
+            for cust in demo._customers.values():
+                await store.save_customer(cust)
+            for conv in demo._conversations.values():
+                await store.save_conversation(conv)
+            logger.info("Demo seed complete.")
 
     logger.info("=== T-CHai ready — listening on %s:%s ===", settings.APP_HOST, settings.APP_PORT)
     yield
@@ -101,6 +122,7 @@ app.add_middleware(
 
 API_PREFIX = "/api/v1"
 
+app.include_router(auth.router,          prefix=f"{API_PREFIX}/auth",          tags=["Auth"])
 app.include_router(events.router,        prefix=f"{API_PREFIX}/events",        tags=["Events"])
 app.include_router(businesses.router,    prefix=f"{API_PREFIX}/businesses",    tags=["Businesses"])
 app.include_router(customers.router,     prefix=f"{API_PREFIX}/customers",     tags=["Customers"])

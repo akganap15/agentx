@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from backend.src.agents.orchestrator import Orchestrator
 from backend.src.config import settings
+from backend.src.models.conversation import Conversation, ConversationMessage, MessageRole
 from backend.src.models.event import EventSource, EventType, InboundEvent
 
 logger = logging.getLogger(__name__)
@@ -203,13 +204,45 @@ async def simulate_event(
     result = await orchestrator.handle(event, history=history)
 
     agent_reply = result.get("reply", "")
-    history.append({"role": "agent", "content": agent_reply, "agent": result.get("agent"), "ts": event.id})
+    agent_used = result.get("agent", "orchestrator")
+
+    history.append({"role": "agent", "content": agent_reply, "agent": agent_used, "ts": event.id})
     _conversation_history[conv_id] = history[-20:]  # keep last 20 turns
+
+    # Persist conversation to the store so the dashboard reflects it
+    if store:
+        try:
+            existing = await store.get_conversation(conv_id)
+            if existing:
+                existing.messages.append(
+                    ConversationMessage(role=MessageRole.USER, content=payload.message)
+                )
+                existing.messages.append(
+                    ConversationMessage(role=MessageRole.ASSISTANT, content=agent_reply)
+                )
+                existing.last_message = agent_reply
+                existing.agent = agent_used
+                await store.save_conversation(existing)
+            else:
+                conv = Conversation(
+                    id=conv_id,
+                    business_id=business_id,
+                    customer_phone=payload.from_number,
+                    agent=agent_used,
+                    last_message=agent_reply,
+                    messages=[
+                        ConversationMessage(role=MessageRole.USER, content=payload.message),
+                        ConversationMessage(role=MessageRole.ASSISTANT, content=agent_reply),
+                    ],
+                )
+                await store.save_conversation(conv)
+        except Exception as exc:
+            logger.warning("Failed to persist conversation %s: %s", conv_id, exc)
 
     return EventResponse(
         status="processed",
         event_id=event.id,
         agent_reply=agent_reply,
-        agent_used=result.get("agent"),
+        agent_used=agent_used,
         conversation_id=conv_id,
     )
