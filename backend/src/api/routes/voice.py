@@ -44,7 +44,6 @@ router = APIRouter()
 _voice_sessions: Dict[str, Dict[str, Any]] = {}
 
 MAX_TURNS = 8  # end call after this many exchanges
-BUSINESS_NAME = "Andy Plumbing"
 VOICE = "Polly.Joanna"  # AWS Polly via Twilio — natural female voice
 
 
@@ -95,22 +94,39 @@ def _gather(action: str, say_text: str) -> str:
     )
 
 
-VOICE_SYSTEM_PROMPT = """You are a friendly and professional AI voice assistant for Andy Plumbing, a residential plumbing service in Austin, TX.
+def _build_voice_system_prompt(business: Any) -> str:
+    """Build voice system prompt dynamically from the business profile."""
+    if business and not isinstance(business, dict):
+        business = business.model_dump() if hasattr(business, "model_dump") else {}
+    b = business or {}
+    name = b.get("name") or settings.BUSINESS_NAME
+    industry = b.get("industry", "service")
+    address = b.get("address", "")
+    brand_voice = b.get("brand_voice", "friendly and professional")
+    services_list = b.get("services", [])
+    services_text = ", ".join(
+        s.get("name", "") if isinstance(s, dict) else getattr(s, "name", "")
+        for s in services_list if (s.get("name") if isinstance(s, dict) else getattr(s, "name", ""))
+    ) or "general services"
+    hours = b.get("hours_summary") or "regular business hours"
+    location = f" in {address}" if address else ""
 
-Your job: help callers book appointments or get help with plumbing issues.
+    return f"""You are a {brand_voice} AI voice assistant for {name}, a {industry} business{location}.
+
+Your job: help callers book appointments or get information about our services.
+
+Services we offer: {services_text}
+Business hours: {hours}
 
 Appointment booking — collect ALL of these before confirming:
 1. Customer's full name
 2. Service address (street, city)
-3. Description of the problem
-4. Preferred date AND time (offer morning 8am-12pm or afternoon 12pm-5pm)
+3. Description of the issue or service needed
+4. Preferred date AND time (offer morning or afternoon slots)
 5. Best callback number
 
-Do NOT confirm the booking or say goodbye until you have all 5 items. If the caller skips one, ask for it.
-
-After collecting everything, read back a full summary and ask the caller to confirm before ending.
-
-Emergency calls: immediately tell them to shut off the main water valve, get their address, and assure a tech within 2 hours.
+Do NOT confirm the booking or say goodbye until you have all 5 items.
+After collecting everything, read back a full summary and ask the caller to confirm.
 
 Voice rules:
 - 1-2 short sentences per turn
@@ -133,7 +149,7 @@ async def realtime_ws_relay(ws: WebSocket):
     litellm_url = getattr(settings, "LITELLM_BASE_URL", "https://llm.t-mobile.com")
 
     # Realtime API always uses the realtime-preview model regardless of LITELLM_MODEL
-    realtime_model = "gpt-4o-mini-realtime-preview"
+    realtime_model = "gpt-4o-realtime-preview"
 
     # Build the upstream WebSocket URL
     wss_url = f"{litellm_url.rstrip('/').replace('http://', 'ws://').replace('https://', 'wss://')}/v1/realtime?model={realtime_model}"
@@ -338,18 +354,28 @@ async def inbound_call(
     """
     logger.info("Inbound call: CallSid=%s From=%s To=%s", CallSid, From, To)
 
+    # Load business from store
+    store = getattr(request.app.state, "store", None)
+    business_id = settings.DEMO_BUSINESS_ID
+    business = None
+    if store:
+        business = await store.get_business(business_id)
+
+    business_name = (business.name if business else None) or settings.BUSINESS_NAME
+
     # Initialise session
     _voice_sessions[CallSid] = {
         "history": [],
         "turns": 0,
         "from_number": From,
-        "business_id": settings.DEMO_BUSINESS_ID,
+        "business_id": business_id,
+        "system_prompt": _build_voice_system_prompt(business),
         "started_at": datetime.utcnow().isoformat(),
     }
 
     respond_url = f"{settings.VOICE_WEBHOOK_BASE_URL}/api/v1/voice/respond"
     greeting = (
-        f"Hi! Thanks for calling {BUSINESS_NAME}. "
+        f"Hi! Thanks for calling {business_name}. "
         f"I'm an AI assistant and I'm here to help. "
         f"How can I help you today?"
     )

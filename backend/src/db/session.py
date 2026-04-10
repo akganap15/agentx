@@ -28,14 +28,20 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Engine — created once at import time
+# SQLite and PostgreSQL need different pool settings
 # ---------------------------------------------------------------------------
+
+_is_sqlite = settings.DATABASE_URL.startswith("sqlite")
 
 engine: AsyncEngine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.is_development,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,  # detect stale connections
+    # SQLite is file-based — pooling params not supported
+    **({"connect_args": {"check_same_thread": False}} if _is_sqlite else {
+        "pool_size": 10,
+        "max_overflow": 20,
+        "pool_pre_ping": True,
+    }),
 )
 
 # Session factory

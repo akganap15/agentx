@@ -69,6 +69,13 @@ class Orchestrator:
 
         business_dict = business.model_dump() if business else {"name": "the business", "id": event.business_id}
 
+        # Enrich with pre-formatted summaries so every agent prompt has context
+        business_dict["hours_summary"] = self._format_hours(business_dict.get("hours", {}))
+        business_dict["services_summary"] = self._format_services(business_dict.get("services", []))
+        business_dict["next_open"] = self._next_open_label(
+            business_dict.get("hours", {}), business_dict.get("timezone", "America/New_York")
+        )
+
         # 2. Load customer history
         customer_history = "No prior contact."
         if self.store and event.from_number:
@@ -213,6 +220,38 @@ class Orchestrator:
         current_minutes = now.hour * 60 + now.minute
 
         return not (open_minutes <= current_minutes < close_minutes)
+
+    def _format_services(self, services: list) -> str:
+        """Return a comma-separated list of service names for agent prompts."""
+        if not services:
+            return "General services"
+        names = [s.get("name", "") if isinstance(s, dict) else getattr(s, "name", "") for s in services]
+        names = [n for n in names if n]
+        return ", ".join(names) if names else "General services"
+
+    def _next_open_label(self, hours: Dict[str, Any], timezone: str) -> str:
+        """Return a human-readable next opening time, e.g. 'Monday at 8:00 AM'."""
+        if not hours:
+            return "tomorrow morning"
+        try:
+            import zoneinfo
+            tz = zoneinfo.ZoneInfo(timezone)
+            now = datetime.now(tz)
+        except Exception:
+            now = datetime.utcnow()
+        day_names = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"]
+        for offset in range(1, 8):
+            candidate = (now.weekday() + offset + 1) % 7  # weekday() is Mon=0; day_names is Sun=0
+            day_name = day_names[(now.weekday() + offset + 1) % 7]
+            h = hours.get(day_name)
+            if not h:
+                continue
+            closed = h.get("closed", False) if isinstance(h, dict) else getattr(h, "closed", False)
+            if not closed:
+                open_t = h.get("open", "09:00") if isinstance(h, dict) else getattr(h, "open", "09:00")
+                label = day_name.capitalize() if offset > 1 else "tomorrow"
+                return f"{label} at {open_t}"
+        return "when we reopen"
 
     def _format_hours(self, hours: Dict[str, Any]) -> str:
         if not hours:
