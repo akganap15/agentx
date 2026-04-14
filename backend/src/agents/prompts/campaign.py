@@ -20,7 +20,7 @@ Message formula:
   3. CTA: One clear, easy action (text back, click link, call)
 
 Example:
-  "Hey Alice! It's Andy from Andy Plumbing. Winter is rough on pipes — thought
+  "Hey Alice! It's Alex from Alex's Plumbing Service. Winter is rough on pipes — thought
    you'd want a free annual inspection check. Want me to pencil you in this week?
    Just reply YES and I'll send times. 🔧"
 

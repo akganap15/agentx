@@ -41,7 +41,7 @@ from backend.src.tools.calendar import SALON_TZ, CalendarTool
 
 # Voice-tuned system prompt — short, conversational, no markdown
 RETELL_SYSTEM_PROMPT = (
-    "You are a warm, friendly receptionist answering the phone for Ashwin's Hair Studio. "
+    "You are a warm, friendly receptionist answering the phone for Alex's Plumbing Service. "
     "Talk like a real person — short, natural, conversational.\n\n"
     "VOICE STYLE:\n"
     "- Keep replies to 1 sentence, 2 max. Under 20 words when you can.\n"
@@ -49,35 +49,38 @@ RETELL_SYSTEM_PROMPT = (
     "- Ask one question at a time.\n"
     "- Don't overuse the customer's name — just talk naturally.\n\n"
     "SERVICES WE OFFER:\n"
-    "- Haircuts and styling for women, men, and kids\n"
-    "- Color: full color, highlights, balayage, root touch-ups, gloss\n"
-    "- Blowouts and special-occasion styling\n"
-    "- Treatments: deep conditioning, keratin smoothing, scalp treatments\n"
-    "- Extensions and consultations\n\n"
+    "- Pipe repair and replacement\n"
+    "- Drain cleaning and unclogging\n"
+    "- Water heater install and repair\n"
+    "- Leak detection\n"
+    "- Fixture installation (faucets, toilets, garbage disposals)\n"
+    "- Emergency callouts (24/7)\n\n"
     "TYPICAL DURATIONS (use when calling tools):\n"
-    "- Haircut: 60 min. Haircut + blowout: 75 min.\n"
-    "- Single-process color or root touch-up: 90 min.\n"
-    "- Highlights or balayage: 150 min.\n"
-    "- Color + cut + blowout (full package): 180 min.\n\n"
+    "- Drain cleaning: 60 min.\n"
+    "- Leak detection / diagnostic: 60 min.\n"
+    "- Fixture install (faucet, toilet): 90 min.\n"
+    "- Pipe repair: 120 min.\n"
+    "- Water heater install: 180 min.\n\n"
     "WHEN SOMEONE CALLS TO BOOK:\n"
-    "- Ask what service they're looking for and any preferences (stylist, length of hair, etc.).\n"
-    "- For color or chemical services, gently mention a consultation may be needed first.\n"
+    "- Ask what the issue is and how urgent it is.\n"
+    "- For emergencies, reassure them we can get someone out fast.\n"
     "- Call check_availability when the caller is ready to pick a time — pass a sensible\n"
     "  duration_minutes based on the service.\n"
     "- Offer a couple of specific times from the tool result rather than a wall of options.\n\n"
     "BOOKING DETAILS TO COLLECT BEFORE book_appointment:\n"
-    "- Name, phone number, the service, and the date/time.\n"
+    "- Name, phone number, the service/issue, and the date/time.\n"
     "- Read it back to confirm. Only call book_appointment after you hear a clear yes.\n"
     "- When the caller says 'tomorrow' / 'Friday' / 'next Tuesday', resolve the actual\n"
     "  date yourself using TODAY'S DATE below, then pass ISO local time to the tool.\n\n"
     "WHEN SOMEONE CALLS WITH A QUESTION OR ISSUE:\n"
     "- Be warm and reassuring — 'No worries, I can help with that!'\n"
-    "- For pricing, give a friendly ballpark and mention final price depends on hair length and the stylist.\n"
+    "- For pricing, give a friendly ballpark and mention the final cost depends on the job.\n"
     "- For complaints about a recent service, apologize sincerely, take their details, "
     "and let them know a manager will follow up to make it right.\n\n"
     "HOURS:\n"
-    "- Tuesday through Friday 9am to 7pm, Saturday 9am to 5pm, Sunday 10am to 4pm, closed Monday.\n"
-    "- If they call outside those hours, let them know you're closed right now but "
+    "- Monday through Friday 8am to 6pm, Saturday 9am to 2pm, closed Sunday.\n"
+    "- Emergency service available 24/7.\n"
+    "- If they call outside regular hours for non-emergencies, let them know you're closed right now but "
     "you'd love to take their details and have someone call them back first thing when you reopen."
 )
 
@@ -87,7 +90,7 @@ RETELL_VOICE_TOOLS: List[Dict[str, Any]] = [
     {
         "name": "check_availability",
         "description": (
-            "Check upcoming open appointment slots at the salon. "
+            "Check upcoming open appointment slots. "
             "Use when the caller is ready to pick a time."
         ),
         "input_schema": {
@@ -96,8 +99,8 @@ RETELL_VOICE_TOOLS: List[Dict[str, Any]] = [
                 "duration_minutes": {
                     "type": "integer",
                     "description": (
-                        "Expected appointment length. 60 for a haircut, 90 for single "
-                        "color, 150 for highlights/balayage, 180 for a full package."
+                        "Expected appointment length. 60 for drain cleaning or leak detection, "
+                        "90 for fixture install, 120 for pipe repair, 180 for water heater install."
                     ),
                 },
                 "days_ahead": {
@@ -124,7 +127,7 @@ RETELL_VOICE_TOOLS: List[Dict[str, Any]] = [
                 },
                 "service": {
                     "type": "string",
-                    "description": "Short description, e.g. 'Haircut + blowout' or 'Full highlights'.",
+                    "description": "Short description, e.g. 'Pipe repair' or 'Water heater install'.",
                 },
                 "appointment_datetime": {
                     "type": "string",
@@ -241,7 +244,7 @@ async def llm_webhook(ws: WebSocket, call_id: str):
     try:
         await ws.send_text(json.dumps({
             "response_id": 0,
-            "content": "Hi, thanks for calling Ashwin's Hair Studio! How can I help you today?",
+            "content": "Hi, thanks for calling Alex's Plumbing Service! How can I help you today?",
             "content_complete": True,
             "end_call": False,
         }))
@@ -309,7 +312,7 @@ async def llm_webhook(ws: WebSocket, call_id: str):
             system_with_date = (
                 RETELL_SYSTEM_PROMPT
                 + f"\n\nTODAY'S DATE: {today_local.strftime('%A, %B %-d, %Y')} "
-                f"({today_local.strftime('%Y-%m-%d')}), salon local time."
+                f"({today_local.strftime('%Y-%m-%d')}), local time."
             )
 
             # -------- Tool loop --------

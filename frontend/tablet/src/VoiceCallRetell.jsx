@@ -129,7 +129,7 @@ export default function VoiceCallRetell({ onCallEnd }) {
         <div className="voice-header">
           <div className="voice-avatar">AP</div>
           <div className="voice-header-info">
-            <div className="voice-biz-name">Andy Plumbing</div>
+            <div className="voice-biz-name">Alex's Plumbing Service</div>
             <div className="voice-status">
               <span className="voice-status-dot" style={{ background: stateColor }} />
               {stateLabel}

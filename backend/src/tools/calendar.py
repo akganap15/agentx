@@ -5,8 +5,8 @@ Provides availability checking and appointment booking via the Google Calendar A
 In demo mode (no service-account key), returns realistic mock data so the agents
 still function.
 
-This module is salon-aware: slots are generated in America/Los_Angeles respecting
-Ashwin's Hair Studio hours (Tue–Fri 9–19, Sat 9–17, Sun 10–16, closed Monday).
+This module is business-aware: slots are generated in America/Los_Angeles respecting
+Alex's Plumbing Service hours (Mon–Fri 8–18, Sat 9–14, closed Sunday).
 """
 
 from __future__ import annotations
@@ -20,22 +20,22 @@ from backend.src.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Salon timezone — all slot generation, bookings, and freeBusy windows use this.
+# Business timezone — all slot generation, bookings, and freeBusy windows use this.
 SALON_TZ = ZoneInfo("America/Los_Angeles")
 
 # Working hours keyed by weekday() (0=Mon, 6=Sun). None = closed.
 # Values are (open_hour, close_hour) in 24h local time.
 SALON_HOURS: dict[int, Optional[Tuple[int, int]]] = {
-    0: None,         # Monday — closed
-    1: (9, 19),      # Tuesday
-    2: (9, 19),      # Wednesday
-    3: (9, 19),      # Thursday
-    4: (9, 19),      # Friday
-    5: (9, 17),      # Saturday
-    6: (10, 16),     # Sunday
+    0: (8, 18),      # Monday
+    1: (8, 18),      # Tuesday
+    2: (8, 18),      # Wednesday
+    3: (8, 18),      # Thursday
+    4: (8, 18),      # Friday
+    5: (9, 14),      # Saturday
+    6: None,         # Sunday — closed
 }
 
-SALON_LOCATION = "Ashwin's Hair Studio"
+SALON_LOCATION = "Alex's Plumbing Service"
 
 
 class CalendarTool:
@@ -84,7 +84,7 @@ class CalendarTool:
         (with Pacific offset) for the next `days_ahead` days.
 
         Production: Google Calendar FreeBusy API.
-        Demo mode (no key): synthetic slots that still respect salon hours.
+        Demo mode (no key): synthetic slots that still respect business hours.
         """
         if not settings.GOOGLE_SERVICE_ACCOUNT_JSON:
             return self._demo_availability(duration_minutes, days_ahead)
@@ -98,7 +98,7 @@ class CalendarTool:
     async def _real_availability(
         self, duration_minutes: int, days_ahead: int
     ) -> List[str]:
-        """Query Google Calendar FreeBusy API for open slots within salon hours."""
+        """Query Google Calendar FreeBusy API for open slots within business hours."""
         session = self._get_session()
 
         now_local = datetime.now(SALON_TZ)
@@ -141,7 +141,7 @@ class CalendarTool:
     def _demo_availability(
         self, duration_minutes: int, days_ahead: int
     ) -> List[str]:
-        """Synthetic slots when no Google API key is available."""
+        """Synthetic slots when no Google Calendar key is available."""
         return self._generate_slots(
             start=datetime.now(SALON_TZ),
             duration_minutes=duration_minutes,
@@ -159,7 +159,7 @@ class CalendarTool:
     ) -> List[str]:
         """
         Walk forward from `start` in 30-minute steps, returning up to `max_slots`
-        slots that (a) fall inside salon hours for that weekday and (b) don't
+        slots that (a) fall inside business hours for that weekday and (b) don't
         overlap any busy period.
         """
         # Round UP to the next 30-min boundary so we don't offer a time that's
@@ -239,7 +239,7 @@ class CalendarTool:
         session = self._get_session()
 
         start_dt = datetime.fromisoformat(appointment_dt)
-        # If the caller passed a naive ISO string, assume it's salon-local time.
+        # If the caller passed a naive ISO string, assume it's local time.
         if start_dt.tzinfo is None:
             start_dt = start_dt.replace(tzinfo=SALON_TZ)
         end_dt = start_dt + timedelta(minutes=duration_minutes)

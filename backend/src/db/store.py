@@ -5,7 +5,7 @@ Implements the same interface as a real DB layer so agents and routes
 can call store.get_business(), store.save_customer(), etc. without
 knowing whether they're talking to Postgres or an in-memory dict.
 
-Pre-populated with "Pete's Plumbing" demo data so the demo works
+Pre-populated with "Alex's Plumbing Service" demo data so the demo works
 immediately after `uvicorn backend.server:app --reload`.
 """
 
@@ -22,7 +22,7 @@ from backend.src.models.customer import Customer
 
 logger = logging.getLogger(__name__)
 
-DEMO_BUSINESS_ID = "demo-petes-plumbing"
+DEMO_BUSINESS_ID = "alex-s-plumbing"
 
 
 class InMemoryStore:
@@ -105,20 +105,20 @@ class InMemoryStore:
 
 def _build_demo_store() -> InMemoryStore:
     """
-    Creates and seeds the singleton demo store with Andy Plumbing data.
+    Creates and seeds the singleton demo store with Alex's Plumbing Service data.
     Called once at module import time.
     """
     store = InMemoryStore()
 
-    # ---- Demo Business: Andy Plumbing ----
+    # ---- Demo Business: Alex's Plumbing Service ----
     petes = Business(
         id=DEMO_BUSINESS_ID,
-        name="Andy Plumbing",
+        name="Alex's Plumbing Service",
         industry="plumbing",
-        owner_name="Andy",
+        owner_name="Alex",
         phone="+15551234567",
-        email="andy@andyplumbing.example.com",
-        website="https://andyplumbing.example.com",
+        email="alex@alexplumbing.example.com",
+        website="https://alexplumbing.example.com",
         address="123 Main St, Austin, TX 78701",
         timezone="America/Los_Angeles",
         sms_number="+15557654321",
@@ -128,7 +128,7 @@ def _build_demo_store() -> InMemoryStore:
             "tuesday":   BusinessHours(open="08:00", close="18:00"),
             "wednesday": BusinessHours(open="08:00", close="18:00"),
             "thursday":  BusinessHours(open="08:00", close="18:00"),
-            "friday":    BusinessHours(open="08:00", close="17:00"),
+            "friday":    BusinessHours(open="08:00", close="18:00"),
             "saturday":  BusinessHours(open="09:00", close="14:00"),
             "sunday":    BusinessHours(closed=True),
         },
@@ -147,7 +147,7 @@ def _build_demo_store() -> InMemoryStore:
             ),
             FAQ(
                 question="Are you licensed and insured?",
-                answer="Absolutely. Andy Plumbing is fully licensed (TX Plumbing License #12345) and carries $2M liability insurance.",
+                answer="Absolutely. Alex's Plumbing Service is fully licensed (TX Plumbing License #12345) and carries $2M liability insurance.",
             ),
             FAQ(
                 question="What payment methods do you accept?",
@@ -272,7 +272,7 @@ def _build_demo_store() -> InMemoryStore:
                 ),
                 ConversationMessage(
                     role=MessageRole.ASSISTANT,
-                    content="Hi Bob! Great timing — bathroom rough-in work typically runs $800–$2,500 depending on complexity. I'd love to get Andy out to give you a free estimate. Are you available this Thursday or Friday afternoon?",
+                    content="Hi Bob! Great timing — bathroom rough-in work typically runs $800–$2,500 depending on complexity. I'd love to get Alex out to give you a free estimate. Are you available this Thursday or Friday afternoon?",
                     timestamp=now - timedelta(days=2),
                 ),
             ],
@@ -296,7 +296,7 @@ def _build_demo_store() -> InMemoryStore:
                 ),
                 ConversationMessage(
                     role=MessageRole.ASSISTANT,
-                    content="Hi! This is Andy Plumbing — we've got you covered 24/7. First, shut off the main water valve (usually near your meter or water heater). Text me your address and we'll have an emergency tech to you within 2 hours. Hang tight!",
+                    content="Hi! This is Alex's Plumbing Service — we've got you covered 24/7. First, shut off the main water valve (usually near your meter or water heater). Text me your address and we'll have an emergency tech to you within 2 hours. Hang tight!",
                     timestamp=now - timedelta(hours=1),
                 ),
             ],

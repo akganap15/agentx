@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import './VoiceCall.css'
 
-const SYSTEM_PROMPT = `You are a friendly and professional AI voice assistant for Andy Plumbing, a residential plumbing service in Austin, TX.
+const SYSTEM_PROMPT = `You are a friendly and professional AI voice assistant for Alex's Plumbing Service, a residential plumbing service in Austin, TX.
 
 ## Your job
-Help callers book appointments or get help with plumbing issues. Services include pipe repair, drain cleaning, water heater install/repair, leak detection, and emergency callouts.
+Help callers book appointments or get help with plumbing issues. Services include pipe repair, drain cleaning, water heater install/repair, leak detection, fixture installation, and emergency callouts.
 
 ## Appointment booking — collect ALL of these before confirming:
 1. Customer's full name
@@ -358,7 +358,7 @@ export default function VoiceCall({ onCallEnd }) {
           <div className="vc-header-left">
             <div className="vc-avatar">AP</div>
             <div>
-              <div className="vc-business">Andy Plumbing</div>
+              <div className="vc-business">Alex's Plumbing Service</div>
               <div className="vc-status-row">
                 <span className={`vc-state-dot ${dotClass}`} />
                 <span className="vc-state-label">{statusText}</span>

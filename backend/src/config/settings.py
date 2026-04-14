@@ -81,7 +81,7 @@ class Settings(BaseSettings):
         description="Public base URL for Twilio voice webhooks (ngrok URL or deployed domain).",
     )
     BUSINESS_NAME: str = Field(
-        default="Andy Plumbing",
+        default="Alex's Plumbing Service",
         description="Business name spoken in voice greetings.",
     )
 

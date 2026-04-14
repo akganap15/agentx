@@ -5,7 +5,7 @@ import VoiceCallRetell from './VoiceCallRetell'
 import SetupWizard from './wizard/SetupWizard'
 import './App.css'
 
-const DEMO_ID = 'demo-petes-plumbing'
+const DEMO_ID = 'alex-s-plumbing'
 const STORAGE_KEY = 'tchai_business_id'
 
 const SCENARIOS = [

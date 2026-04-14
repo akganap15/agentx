@@ -1,13 +1,13 @@
 """
 Hard-coded demo appointment seed.
 
-Adds a fake "Sarah Mitchell — Base Color, Highlights, Haircut & Blowout"
-appointment for 6 PM tomorrow into:
+Adds a fake "Kelly Ann Smith — Water Heater Install & Inspection"
+appointment for 10 AM tomorrow into:
 
   1. The conversation store, so the owner dashboard's
      "Appointments Booked" KPI shows >= 1 on a fresh start.
   2. Google Calendar (when GOOGLE_SERVICE_ACCOUNT_JSON is configured),
-     so the appointment also appears in the studio's actual calendar.
+     so the appointment also appears in the business's actual calendar.
 
 Idempotency:
   - In-memory store is reset on every restart, so the conversation seed is
@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 
 DEMO_CUSTOMER_NAME = "Kelly Ann Smith"
 DEMO_CUSTOMER_PHONE = "+15555550123"
-DEMO_SERVICE = "Base Color, Highlights, Haircut & Blowout"
-DEMO_DURATION_MIN = 180  # 3 hours for the full service
+DEMO_SERVICE = "Water Heater Install & Inspection"
+DEMO_DURATION_MIN = 180  # 3 hours for install + inspection
 TIMEZONE = "America/Los_Angeles"
 
 
@@ -42,7 +42,7 @@ async def seed_demo_appointment(store) -> None:
     """Seed both the conversation store and Google Calendar."""
     tz = ZoneInfo(TIMEZONE)
     tomorrow = datetime.now(tz) + timedelta(days=1)
-    appt_start = tomorrow.replace(hour=18, minute=0, second=0, microsecond=0)
+    appt_start = tomorrow.replace(hour=10, minute=0, second=0, microsecond=0)
     appt_end = appt_start + timedelta(minutes=DEMO_DURATION_MIN)
 
     # 1) Conversation that drives the "Appointments Booked" KPI
@@ -57,16 +57,16 @@ async def seed_demo_appointment(store) -> None:
         messages=[
             ConversationMessage(
                 role=MessageRole.USER,
-                content="Hi, I'd like to book a base color, highlights, haircut, and blowout.",
+                content="Hi, I'd like to book a water heater install and inspection.",
             ),
             ConversationMessage(
                 role=MessageRole.ASSISTANT,
-                content="Wonderful! I have 6 PM tomorrow available — shall I book that for you?",
+                content="Great! I have 10 AM tomorrow available — shall I book that for you?",
             ),
             ConversationMessage(role=MessageRole.USER, content="Yes please."),
             ConversationMessage(
                 role=MessageRole.ASSISTANT,
-                content=f"All set, {DEMO_CUSTOMER_NAME}! See you tomorrow at 6 PM.",
+                content=f"All set, {DEMO_CUSTOMER_NAME}! See you tomorrow at 10 AM.",
             ),
         ],
     )
@@ -105,9 +105,9 @@ def _seed_calendar_event(start_dt: datetime, end_dt: datetime) -> None:
             f"Customer: {DEMO_CUSTOMER_NAME}\n"
             f"Phone: {DEMO_CUSTOMER_PHONE}\n"
             f"Service: {DEMO_SERVICE}\n\n"
-            "(Hard-coded demo appointment for Ashwin's Hair Studio)"
+            "(Hard-coded demo appointment for Alex's Plumbing Service)"
         ),
-        "location": "Ashwin's Hair Studio",
+        "location": "Alex's Plumbing Service",
         "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
         "end":   {"dateTime": end_dt.isoformat(),   "timeZone": TIMEZONE},
     }
